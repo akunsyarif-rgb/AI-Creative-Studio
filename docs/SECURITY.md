@@ -10,9 +10,10 @@
 
 ## Access control
 - Treat the application as a single-owner private application, not as an unauthenticated private website.
+- The `app_owner` allowlist must contain exactly one Auth user UUID. RLS policies deny all other signed-in users.
 - Require owner authentication before exposing projects, media, provider settings, or job endpoints.
 - Apply Supabase Row Level Security to user-owned records.
-- Keep the provider credential table inaccessible to authenticated browser roles; trusted server routes use a service-role client only after verifying the owner session.
+- Keep the provider credential table inaccessible to authenticated browser roles; trusted server routes use a service-role client only after verifying the owner session and owner allowlist.
 - Keep R2 buckets private and issue short-lived signed URLs only after authorization.
 - Never trust an owner ID supplied by the browser; derive it from the verified session.
 
