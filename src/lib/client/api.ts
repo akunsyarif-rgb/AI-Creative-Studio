@@ -100,3 +100,35 @@ export async function pollJob(
     await sleep(intervalMs);
   }
 }
+
+/** Shape of `GET /api/providers` (static, non-secret provider config). */
+export interface ProviderView {
+  id: string;
+  name: string;
+  description: string | null;
+  models: ModelView[];
+}
+
+export interface ModelView {
+  modelId: string;
+  displayName: string;
+  capabilities: string[];
+  isFreeTier: boolean;
+  parameters: { key: string; label: string; default: string; options: { value: string; label: string }[] }[];
+}
+
+const IMAGE_CAPABILITIES = ["text_to_image", "image_to_image"];
+
+/** Models that can serve the Image Studio for the requested capability. */
+export function imageModels(provider: ProviderView | undefined, capability: "text_to_image" | "image_to_image"): ModelView[] {
+  return (provider?.models ?? []).filter((m) => m.capabilities.includes(capability) && IMAGE_CAPABILITIES.includes(capability));
+}
+
+/** Providers that offer at least one image model. */
+export function imageProviders(providers: ProviderView[]): ProviderView[] {
+  return providers.filter((p) => p.models.some((m) => m.capabilities.some((c) => IMAGE_CAPABILITIES.includes(c))));
+}
+
+export function defaultParams(model: ModelView | undefined): Record<string, string> {
+  return Object.fromEntries((model?.parameters ?? []).map((p) => [p.key, p.default]));
+}

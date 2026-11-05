@@ -2,20 +2,15 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { authenticate, type TokenVerifier } from "@/lib/auth/session";
 import type { AssetsRepository, JobsRepository, KeysRepository } from "@/lib/data/repositories";
-import { CAPABILITIES, type Capability } from "@/lib/providers/types";
+import { CAPABILITIES } from "@/lib/providers/types";
 import { SNIFF_BYTES, sniffMime } from "@/lib/storage/sniff";
 import { StorageError, newObjectKey, validateUpload, type ObjectStorage } from "@/lib/storage/r2";
-import { ProviderError, type ProviderAdapter } from "@/lib/providers/types";
+import type { ProviderRegistry } from "@/lib/providers/registry";
+import { ProviderError } from "@/lib/providers/types";
 import { credentialContext } from "@/lib/security/credential-context";
 import { executeJob } from "@/lib/jobs/execute";
 import { apiError, internalError, json, parseJson, unauthorized } from "./http";
 import { enforceRate, type RateLimiter } from "./rate-limit";
-
-/** Which provider/model pairs can run which capability. Empty until adapters are registered. */
-export interface ProviderCatalog {
-  supports(providerId: string, modelId: string, capability: Capability): boolean;
-  adapter(providerId: string): ProviderAdapter | undefined;
-}
 
 /** Encrypts provider credentials. The default implementation wraps `security/secrets.ts`. */
 export interface CredentialVault {
@@ -39,7 +34,8 @@ export interface ApiDeps {
   jobs: JobsRepository;
   assets: AssetsRepository;
   storage: ObjectStorage;
-  catalog: ProviderCatalog;
+  /** Source of truth for available providers/models/capabilities. */
+  providers: ProviderRegistry;
 }
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,35}$/, "Invalid id");
@@ -102,8 +98,8 @@ export async function postJob(request: Request, deps: ApiDeps): Promise<Response
     const { confirmedMaxCostUsd, ...input } = body.data;
 
     // Fail closed: unknown provider/model/capability => nothing is persisted or submitted.
-    const adapter = deps.catalog.adapter(input.providerId);
-    if (!adapter || !deps.catalog.supports(input.providerId, input.modelId, input.capability)) {
+    const adapter = deps.providers.get(input.providerId);
+    if (!adapter || !deps.providers.supports(input.providerId, input.modelId, input.capability)) {
       return apiError(422, "unsupported_capability", "This provider/model does not support the requested capability.");
     }
 
@@ -158,7 +154,7 @@ export async function postJob(request: Request, deps: ApiDeps): Promise<Response
         executeJob(
           {
             jobs: deps.jobs, assets: deps.assets, keys: deps.keys, storage: deps.storage, vault: deps.vault,
-            adapter: (id) => deps.catalog.adapter(id)
+            providers: deps.providers
           },
           job
         )
@@ -199,6 +195,29 @@ export async function getAssetDownload(request: Request, deps: ApiDeps, assetId:
   }
 }
 
+/** Lists registered providers and their models/parameters (non-secret static config). */
+export async function getProviders(request: Request, deps: ApiDeps): Promise<Response> {
+  try {
+    const user = await authenticate(request, deps.verifyToken);
+    if (!user) return unauthorized();
+    const providers = deps.providers.configs().map((c) => ({
+      id: c.id,
+      name: c.name,
+      description: c.description ?? null,
+      models: c.availableModels.map((m) => ({
+        modelId: m.modelId,
+        displayName: m.displayName,
+        capabilities: m.capabilities,
+        isFreeTier: m.isFreeTier ?? false,
+        parameters: m.parameters ?? []
+      }))
+    }));
+    return json(200, { providers });
+  } catch (error) {
+    return internalError(error);
+  }
+}
+
 /** Validates the saved BYOK against the real provider API and records the result. */
 export async function postProviderTest(request: Request, deps: ApiDeps, providerId: string): Promise<Response> {
   try {
@@ -206,7 +225,7 @@ export async function postProviderTest(request: Request, deps: ApiDeps, provider
     if (!user) return unauthorized();
     const limited = enforceRate(deps.limiter, "providerTest", user.userId);
     if (limited) return limited;
-    const adapter = /^[a-z0-9][a-z0-9_-]{1,63}$/.test(providerId) ? deps.catalog.adapter(providerId) : undefined;
+    const adapter = /^[a-z0-9][a-z0-9_-]{1,63}$/.test(providerId) ? deps.providers.get(providerId) : undefined;
     if (!adapter) return apiError(404, "not_found", "Provider not found.");
 
     const ciphertext = await deps.keys.getCiphertext(user.userId, providerId);
@@ -220,7 +239,7 @@ export async function postProviderTest(request: Request, deps: ApiDeps, provider
     }
 
     try {
-      const result = await adapter.validateCredentials(secret);
+      const result = await adapter.testKey(secret);
       const validationStatus = result.valid ? "valid" : "invalid";
       await deps.keys.setValidation(user.userId, providerId, validationStatus);
       return json(200, { validationStatus, ...(result.message ? { message: result.message } : {}) });

@@ -9,6 +9,7 @@ import {
   type ProviderJobRequest,
   type ProviderJobResult
 } from "@/lib/providers/types";
+import { createProviderRegistry } from "@/lib/providers/registry";
 import { createR2Storage, type ObjectInfo } from "@/lib/storage/r2";
 import { decryptWithKeyring, encryptWithKeyring, parseKeyring } from "@/lib/security/secrets-core";
 
@@ -38,10 +39,17 @@ export interface FakeAdapterOptions {
 export function fakeAdapter(options: FakeAdapterOptions = {}) {
   const calls = { submit: 0, validate: 0 };
   const adapter: ProviderAdapter = {
-    providerId: "fake",
-    displayName: "Fake",
-    models: () => [{ providerId: "fake", modelId: "m1", displayName: "M1", capabilities: ["text_to_image", "image_to_image"] }],
-    capabilities: async () => ["text_to_image", "image_to_image"],
+    config: {
+      id: "fake",
+      name: "Fake Provider",
+      availableModels: [
+        {
+          modelId: "m1", displayName: "M1", capabilities: ["text_to_image", "image_to_image"],
+          parameters: [{ key: "size", label: "Size", default: "s", options: [{ value: "s", label: "Small" }] }]
+        }
+      ]
+    },
+    getCapabilities: () => ["text_to_image", "image_to_image"],
     validateRequest(request) {
       if (typeof request.parameters.prompt !== "string" || !request.parameters.prompt) {
         throw new ProviderError("invalid_request", "Invalid parameters: prompt", true);
@@ -50,13 +58,13 @@ export function fakeAdapter(options: FakeAdapterOptions = {}) {
         throw new ProviderError("invalid_request", "image_to_image requires exactly one input image.", true);
       }
     },
-    async validateCredentials(secret) {
+    async testKey(secret) {
       calls.validate++;
       if (options.credentialError) throw options.credentialError;
       return secret === (options.validCredential ?? "good-key") ? { valid: true } : { valid: false, message: "The provider rejected this API key." };
     },
     estimateCost: async () => options.estimate ?? null,
-    async submitJob(request, _key, ctx) {
+    async executeJob(request, _key, ctx) {
       calls.submit++;
       if (options.submit) return options.submit(request, ctx.secret, ctx.inputFiles.length);
       return { status: "validating", outputFiles: [{ contentType: "image/png", data: PNG }] };
@@ -164,10 +172,7 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
       encrypt: async (p, c) => encryptWithKeyring(RING, p, c),
       decrypt: async (c, ctx) => decryptWithKeyring(RING, c, ctx)
     },
-    catalog: {
-      adapter: (id) => (id === "fake" ? adapter : undefined),
-      supports: (p, m, c) => p === "fake" && m === "m1" && adapter.models()[0].capabilities.includes(c)
-    },
+    providers: createProviderRegistry([adapter]),
     limiter: createRateLimiter(opts.limits ?? { keys: { limit: 1000, windowSeconds: 60 }, uploads: { limit: 1000, windowSeconds: 60 }, providerTest: { limit: 1000, windowSeconds: 60 }, jobs: { limit: 1000, windowSeconds: 60 } }),
     scheduler: { run: (t) => { tasks.push(t); } },
     maxJobCostUsd: opts.maxJobCostUsd ?? 1,

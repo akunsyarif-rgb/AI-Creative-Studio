@@ -3,22 +3,12 @@
 import Link from "next/link";
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import {
-  ACCEPTED_IMAGE_TYPES, ApiError, MAX_IMAGE_BYTES, pollJob, uploadAsset, type JobView
+  ACCEPTED_IMAGE_TYPES, ApiError, MAX_IMAGE_BYTES, defaultParams, imageModels, imageProviders, pollJob, uploadAsset,
+  type JobView, type ProviderView
 } from "@/lib/client/api";
 import { useApi } from "@/lib/client/use-session";
 
 interface Estimate { amount: number; currency: string; notes?: string }
-
-const SIZES = [
-  { value: "1024x1024", label: "Square 1024×1024" },
-  { value: "1024x1536", label: "Portrait 1024×1536" },
-  { value: "1536x1024", label: "Landscape 1536×1024" }
-];
-const QUALITIES = [
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" }
-];
 
 const STATUS_TEXT: Record<JobView["status"], string> = {
   queued: "Queued…", submitted: "Sent to the provider…", processing: "Generating…",
@@ -28,8 +18,10 @@ const STATUS_TEXT: Record<JobView["status"], string> = {
 export default function StudioPage() {
   const api = useApi();
   const [prompt, setPrompt] = useState("");
-  const [size, setSize] = useState("1024x1024");
-  const [quality, setQuality] = useState("medium");
+  const [providers, setProviders] = useState<ProviderView[] | null>(null);
+  const [providerChoice, setProviderChoice] = useState("");
+  const [modelChoice, setModelChoice] = useState("");
+  const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ text: string; needsKey?: boolean } | null>(null);
@@ -42,6 +34,34 @@ export default function StudioPage() {
   const uploaded = useRef<{ file: File; assetId: string } | null>(null);
   const abort = useRef<AbortController | null>(null);
   useEffect(() => () => abort.current?.abort(), []);
+
+  // Providers/models/parameters come from the server-side registry.
+  useEffect(() => {
+    let live = true;
+    api
+      .get<{ providers: ProviderView[] }>("/api/providers")
+      .then((r) => live && setProviders(imageProviders(r.providers)))
+      .catch((e) => {
+        if (!live) return;
+        setProviders([]);
+        setError({ text: e instanceof ApiError ? e.message : "Could not load providers." });
+      });
+    return () => {
+      live = false;
+    };
+  }, [api]);
+
+  const capability = file ? "image_to_image" : "text_to_image";
+  const provider = providers?.find((p) => p.id === providerChoice) ?? providers?.[0];
+  const models = imageModels(provider, capability);
+  const model = models.find((m) => m.modelId === modelChoice) ?? models[0];
+  const params = { ...defaultParams(model), ...Object.fromEntries(Object.entries(overrides).filter(([k]) => model?.parameters.some((p) => p.key === k))) };
+
+  /** Any change to the request invalidates a pending cost confirmation and starts a new attempt. */
+  function changed() {
+    attemptKey.current = null;
+    setEstimate(null);
+  }
 
   function onFile(event: ChangeEvent<HTMLInputElement>) {
     const f = event.target.files?.[0] ?? null;
@@ -57,11 +77,11 @@ export default function StudioPage() {
       return;
     }
     setFile(f);
-    attemptKey.current = null;
-    setEstimate(null);
+    changed();
   }
 
   async function submit(confirmedMaxCostUsd?: number) {
+    if (!provider || !model) return;
     setBusy(true);
     setError(null);
     setResultUrl(null);
@@ -76,11 +96,11 @@ export default function StudioPage() {
       attemptKey.current ??= crypto.randomUUID();
       const res = await api.post<{ job: JobView }>("/api/jobs", {
         projectId: "default",
-        capability: file ? "image_to_image" : "text_to_image",
-        providerId: "openai",
-        modelId: "gpt-image-1",
+        capability,
+        providerId: provider.id,
+        modelId: model.modelId,
         inputAssetIds: inputAssetId ? [inputAssetId] : [],
-        parameters: { prompt: prompt.trim(), size, quality },
+        parameters: { prompt: prompt.trim(), ...params },
         idempotencyKey: attemptKey.current,
         ...(confirmedMaxCostUsd === undefined ? {} : { confirmedMaxCostUsd })
       });
@@ -128,22 +148,48 @@ export default function StudioPage() {
       <form className="panel stack" onSubmit={onSubmit}>
         <label className="field">
           <span>Prompt</span>
-          <textarea required maxLength={4000} rows={5} value={prompt} onChange={(e) => { setPrompt(e.target.value); attemptKey.current = null; setEstimate(null); }} placeholder="A watercolor fox reading a map under a lantern…" />
+          <textarea required maxLength={4000} rows={5} value={prompt} onChange={(e) => { setPrompt(e.target.value); changed(); }} placeholder="A watercolor fox reading a map under a lantern…" />
         </label>
         <div className="grid-2">
           <label className="field">
-            <span>Size</span>
-            <select value={size} onChange={(e) => { setSize(e.target.value); attemptKey.current = null; setEstimate(null); }}>
-              {SIZES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+            <span>Provider</span>
+            <select
+              value={provider?.id ?? ""} disabled={!providers?.length}
+              onChange={(e) => { setProviderChoice(e.target.value); setModelChoice(""); setOverrides({}); changed(); }}
+            >
+              {!providers && <option value="">Loading…</option>}
+              {providers?.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </label>
           <label className="field">
-            <span>Quality</span>
-            <select value={quality} onChange={(e) => { setQuality(e.target.value); attemptKey.current = null; setEstimate(null); }}>
-              {QUALITIES.map((q) => <option key={q.value} value={q.value}>{q.label}</option>)}
+            <span>Model</span>
+            <select
+              value={model?.modelId ?? ""} disabled={!models.length}
+              onChange={(e) => { setModelChoice(e.target.value); setOverrides({}); changed(); }}
+            >
+              {!models.length && <option value="">None available</option>}
+              {models.map((m) => <option key={m.modelId} value={m.modelId}>{m.displayName}{m.isFreeTier ? " (free)" : ""}</option>)}
             </select>
           </label>
         </div>
+        {providers && !models.length && (
+          <p className="notice notice-warn" role="status">
+            {provider ? `${provider.name} has no model for ${file ? "editing an image" : "text-to-image"}.` : "No image providers are available."}
+            {file ? " Remove the reference image or pick another provider." : ""}
+          </p>
+        )}
+        {model && model.parameters.length > 0 && (
+          <div className="grid-2">
+            {model.parameters.map((p) => (
+              <label className="field" key={p.key}>
+                <span>{p.label}</span>
+                <select value={params[p.key]} onChange={(e) => { setOverrides({ ...overrides, [p.key]: e.target.value }); changed(); }}>
+                  {p.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </label>
+            ))}
+          </div>
+        )}
         <label className="field">
           <span>Reference image (optional)</span>
           <input type="file" accept={ACCEPTED_IMAGE_TYPES.join(",")} onChange={onFile} />
@@ -160,7 +206,7 @@ export default function StudioPage() {
           <div className="notice notice-warn" role="alert">
             <strong>This is a paid request.</strong>
             <p>Estimated cost: about <b>${estimate.amount.toFixed(3)} {estimate.currency}</b>. {estimate.notes}</p>
-            <p className="small">Billed by OpenAI to your own account. Nothing has been sent yet.</p>
+            <p className="small">Billed by {provider?.name ?? "the provider"} to your own account. Nothing has been sent yet.</p>
             <div className="actions">
               <button className="btn btn-primary" type="button" disabled={busy} onClick={() => void submit(estimate.amount)}>
                 {busy ? "Working…" : `Confirm and generate (~$${estimate.amount.toFixed(3)})`}
@@ -169,7 +215,7 @@ export default function StudioPage() {
             </div>
           </div>
         ) : (
-          <button className="btn btn-primary" type="submit" disabled={busy || !prompt.trim()}>
+          <button className="btn btn-primary" type="submit" disabled={busy || !prompt.trim() || !model}>
             {busy ? "Working…" : file ? "Edit image" : "Generate image"}
           </button>
         )}
