@@ -1,38 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { randomBytes } from "node:crypto";
 import { deleteKey, getKey, getKeys, maskLast4, postKey, putKey } from "./keys-handlers";
-import type { ApiDeps } from "./handlers";
-import type { KeyMetadata, KeysRepository } from "@/lib/data/repositories";
-import { decryptWithKeyring, encryptWithKeyring, parseKeyring } from "@/lib/security/secrets-core";
 import { credentialContext } from "@/lib/security/credential-context";
-import { ALICE, BOB, jsonRequest, verifyToken } from "./test-helpers";
+import type { ApiDeps } from "./handlers";
+import { ALICE, BOB, createTestWorld, jsonRequest } from "./test-helpers";
 
-const ring = parseKeyring(`k1:${randomBytes(32).toString("base64")}`);
 const SECRET = "sk-live-ABCDEFGHIJKLMNOP1234";
 
 function setup() {
-  const rows = new Map<string, KeyMetadata & { ciphertext: string; keyId: string }>();
-  const id = (o: string, p: string) => `${o}/${p}`;
-  const meta = (r: KeyMetadata): KeyMetadata => ({ providerId: r.providerId, last4: r.last4, validationStatus: r.validationStatus, createdAt: r.createdAt, updatedAt: r.updatedAt });
-  const keys: KeysRepository = {
-    async create(i) {
-      if (rows.has(id(i.ownerId, i.providerId))) return null;
-      const row = { providerId: i.providerId, last4: i.last4, validationStatus: "unvalidated" as const, createdAt: "t0", updatedAt: "t0", ciphertext: i.ciphertext, keyId: i.keyId };
-      rows.set(id(i.ownerId, i.providerId), row);
-      return meta(row);
-    },
-    async replace(i) {
-      const row = rows.get(id(i.ownerId, i.providerId));
-      if (!row) return null;
-      Object.assign(row, { ciphertext: i.ciphertext, keyId: i.keyId, last4: i.last4, validationStatus: "unvalidated", updatedAt: "t1" });
-      return meta(row);
-    },
-    async get(o, p) { const r = rows.get(id(o, p)); return r ? meta(r) : null; },
-    async list(o) { return [...rows.entries()].filter(([k]) => k.startsWith(`${o}/`)).map(([, r]) => meta(r)); },
-    async delete(o, p) { return rows.delete(id(o, p)); }
+  const w = createTestWorld();
+  // Same ciphertext format as production, with the world's own keyring.
+  const rows = {
+    has: (k: string) => w.keys.has(k),
+    get: (k: string) => w.keys.get(k)!,
+    get size() { return w.keys.size; }
   };
-  const deps = { verifyToken, keys, vault: { encrypt: async (p: string, c: string) => encryptWithKeyring(ring, p, c) } } as unknown as ApiDeps;
-  return { deps, rows };
+  return { deps: w.deps, rows, w };
 }
 
 describe("BYOK key routes", () => {
@@ -54,9 +36,9 @@ describe("BYOK key routes", () => {
 
     const row = rows.get("alice/openai")!;
     expect(row.ciphertext).not.toContain(SECRET);
-    expect(row.keyId).toBe("k1");
-    expect(decryptWithKeyring(ring, row.ciphertext, credentialContext("alice", "openai"))).toBe(SECRET);
-    expect(() => decryptWithKeyring(ring, row.ciphertext, credentialContext("bob", "openai"))).toThrow();
+    expect(row.ciphertext.split(".")[1]).toBe("k1");
+    expect(await deps.vault.decrypt(row.ciphertext, credentialContext("alice", "openai"))).toBe(SECRET);
+    await expect(deps.vault.decrypt(row.ciphertext, credentialContext("bob", "openai"))).rejects.toThrow();
   });
 
   it("never returns secret or ciphertext from any GET", async () => {
@@ -96,7 +78,7 @@ describe("BYOK key routes", () => {
     expect(res.status).toBe(200);
     expect(await res.clone().text()).not.toContain(next);
     expect((await res.json()).key).toMatchObject({ masked: "••••5678", validationStatus: "unvalidated" });
-    expect(decryptWithKeyring(ring, rows.get("alice/openai")!.ciphertext, credentialContext("alice", "openai"))).toBe(next);
+    expect(await deps.vault.decrypt(rows.get("alice/openai")!.ciphertext, credentialContext("alice", "openai"))).toBe(next);
   });
 
   it("isolates users: bob cannot read, rotate or delete alice's key", async () => {
@@ -128,9 +110,20 @@ describe("BYOK key routes", () => {
     expect((await bad({ providerId: "openai", apiKey: "x".repeat(2001) })).status).toBe(422);
   });
 
+  it("rate limits key operations per user", async () => {
+    const w = createTestWorld({ limits: { keys: { limit: 2, windowSeconds: 60 }, uploads: { limit: 1, windowSeconds: 60 }, providerTest: { limit: 1, windowSeconds: 60 }, jobs: { limit: 1, windowSeconds: 60 } } });
+    const get = (token: string) => getKeys(jsonRequest("/api/keys", { token, method: "GET" }), w.deps);
+    expect((await get(ALICE)).status).toBe(200);
+    expect((await get(ALICE)).status).toBe(200);
+    const blocked = await get(ALICE);
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("retry-after")).toBeTruthy();
+    expect((await get(BOB)).status).toBe(200);
+  });
+
   it("fails without leaking the secret when encryption is unavailable", async () => {
     const { deps } = setup();
-    const broken = { ...deps, vault: { encrypt: async () => { throw new Error(`no key for ${SECRET}`); } } } as ApiDeps;
+    const broken = { ...deps, vault: { ...deps.vault, encrypt: async () => { throw new Error(`no key for ${SECRET}`); } } } as ApiDeps;
     const res = await postKey(jsonRequest("/api/keys", { token: ALICE, body: { providerId: "openai", apiKey: SECRET } }), broken);
     expect(res.status).toBe(500);
     expect(await res.text()).not.toContain(SECRET);

@@ -3,6 +3,7 @@ import { authenticate } from "@/lib/auth/session";
 import { credentialContext } from "@/lib/security/credential-context";
 import { apiError, internalError, json, parseJson, unauthorized } from "./http";
 import type { ApiDeps } from "./handlers";
+import { enforceRate } from "./rate-limit";
 
 const providerId = z.string().regex(/^[a-z0-9][a-z0-9_-]{1,63}$/, "Invalid provider id");
 
@@ -41,6 +42,8 @@ export async function postKey(request: Request, deps: ApiDeps): Promise<Response
   try {
     const user = await authenticate(request, deps.verifyToken);
     if (!user) return unauthorized();
+    const limited = enforceRate(deps.limiter, "keys", user.userId);
+    if (limited) return limited;
     const body = await parseJson(request, createKeySchema);
     if (!body.ok) return body.response;
     const { providerId: provider, apiKey: secret } = body.data;
@@ -57,6 +60,8 @@ export async function getKeys(request: Request, deps: ApiDeps): Promise<Response
   try {
     const user = await authenticate(request, deps.verifyToken);
     if (!user) return unauthorized();
+    const limited = enforceRate(deps.limiter, "keys", user.userId);
+    if (limited) return limited;
     return json(200, { keys: (await deps.keys.list(user.userId)).map(publicKey) });
   } catch (error) {
     return internalError(error);
@@ -67,6 +72,8 @@ export async function getKey(request: Request, deps: ApiDeps, provider: string):
   try {
     const user = await authenticate(request, deps.verifyToken);
     if (!user) return unauthorized();
+    const limited = enforceRate(deps.limiter, "keys", user.userId);
+    if (limited) return limited;
     if (!providerId.safeParse(provider).success) return apiError(404, "not_found", "Key not found.");
     const meta = await deps.keys.get(user.userId, provider);
     return meta ? json(200, { key: publicKey(meta) }) : apiError(404, "not_found", "Key not found.");
@@ -80,6 +87,8 @@ export async function putKey(request: Request, deps: ApiDeps, provider: string):
   try {
     const user = await authenticate(request, deps.verifyToken);
     if (!user) return unauthorized();
+    const limited = enforceRate(deps.limiter, "keys", user.userId);
+    if (limited) return limited;
     if (!providerId.safeParse(provider).success) return apiError(404, "not_found", "Key not found.");
     const body = await parseJson(request, updateKeySchema);
     if (!body.ok) return body.response;
@@ -95,6 +104,8 @@ export async function deleteKey(request: Request, deps: ApiDeps, provider: strin
   try {
     const user = await authenticate(request, deps.verifyToken);
     if (!user) return unauthorized();
+    const limited = enforceRate(deps.limiter, "keys", user.userId);
+    if (limited) return limited;
     if (!providerId.safeParse(provider).success) return apiError(404, "not_found", "Key not found.");
     return (await deps.keys.delete(user.userId, provider)) ? json(200, { deleted: true }) : apiError(404, "not_found", "Key not found.");
   } catch (error) {
