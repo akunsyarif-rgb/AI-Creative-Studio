@@ -36,8 +36,14 @@ function makeDeps(overrides: Partial<ApiDeps> = {}) {
       },
       async findOwned(ownerId, ids) {
         return ids.map((i) => assetStore.get(i)).filter((a): a is AssetRecord => !!a && a.ownerId === ownerId);
+      },
+      async setStatus(id, status) {
+        const a = assetStore.get(id);
+        if (a) a.status = status;
       }
     },
+    keys: {} as ApiDeps["keys"],
+    vault: { encrypt: async (p) => p },
     storage: createR2Storage({ endpoint: "https://acct.r2.cloudflarestorage.com", bucket: "b", accessKeyId: "AK", secretAccessKey: "SK" }),
     catalog: { supports: (p, m, c) => p === "fake" && m === "m1" && c === "text_to_image" },
     ...overrides
