@@ -68,3 +68,31 @@ describe("presigned URLs", () => {
     expect(url.searchParams.get("response-content-disposition")).toBe('attachment; filename="a_b_.._c.png"');
   });
 });
+
+describe("headObject / deleteObject", () => {
+  const key = newObjectKey("user1");
+  const fake = (impl: (cmd: { constructor: { name: string }; input: unknown }) => unknown) =>
+    createR2Storage({ endpoint: "https://a.r2.cloudflarestorage.com", bucket: "b", accessKeyId: "AK", secretAccessKey: "SK" }, Date.now, {
+      send: (async (cmd: never) => impl(cmd)) as never
+    });
+
+  it("returns size and content type", async () => {
+    const s = fake(() => ({ ContentLength: 10, ContentType: "image/png" }));
+    expect(await s.headObject({ ownerId: "user1", key })).toEqual({ size: 10, contentType: "image/png" });
+  });
+
+  it("returns null when the object does not exist, rethrows other errors", async () => {
+    const missing = fake(() => { throw Object.assign(new Error("x"), { name: "NotFound", $metadata: { httpStatusCode: 404 } }); });
+    expect(await missing.headObject({ ownerId: "user1", key })).toBeNull();
+    const broken = fake(() => { throw Object.assign(new Error("x"), { name: "InternalError", $metadata: { httpStatusCode: 500 } }); });
+    await expect(broken.headObject({ ownerId: "user1", key })).rejects.toThrow();
+  });
+
+  it("refuses keys that belong to someone else without calling R2", async () => {
+    let calls = 0;
+    const s = fake(() => { calls++; return {}; });
+    await expect(s.headObject({ ownerId: "user2", key })).rejects.toThrow(StorageError);
+    await expect(s.deleteObject({ ownerId: "user2", key })).rejects.toThrow(StorageError);
+    expect(calls).toBe(0);
+  });
+});

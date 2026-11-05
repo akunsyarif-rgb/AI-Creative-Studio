@@ -90,6 +90,7 @@ export const COLLECTION_SPECS: CollectionSpec[] = [
       { type: "string", key: "providerId", size: 64, required: true },
       { type: "string", key: "ciphertext", size: 4096, required: true },
       { type: "string", key: "keyId", size: 16, required: true },
+      { type: "string", key: "last4", size: 4, required: false },
       { type: "enum", key: "validationStatus", elements: ["unvalidated", "valid", "invalid"], required: true },
       { type: "datetime", key: "validatedAt", required: false }
     ],
