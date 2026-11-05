@@ -75,7 +75,7 @@ export interface ProviderJobResult {
 }
 
 export type ProviderErrorCode =
-  | "auth" | "rate_limited" | "invalid_request" | "content_policy" | "timeout" | "unavailable" | "unknown";
+  | "auth" | "insufficient_funds" | "rate_limited" | "invalid_request" | "content_policy" | "timeout" | "unavailable" | "unknown";
 
 /** Sanitized provider failure: `message` is safe to show to users and never contains provider payloads. */
 export class ProviderError extends Error {

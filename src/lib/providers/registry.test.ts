@@ -49,8 +49,10 @@ describe("ProviderRegistry", () => {
 });
 
 describe("default registry", () => {
-  it("registers OpenAI with its models and parameters, and not the template", () => {
-    expect(providerRegistry.configs().map((c) => c.id)).toEqual(["openai"]);
+  it("registers OpenAI and OpenRouter with their models and parameters, and not the template", () => {
+    expect(providerRegistry.configs().map((c) => c.id)).toEqual(["openai", "openrouter"]);
+    expect(providerRegistry.get("openrouter")!.config.availableModels.length).toBeGreaterThanOrEqual(2);
+    expect(providerRegistry.supports("openrouter", "google/gemini-2.5-flash-image", "text_to_image")).toBe(true);
     const openai = providerRegistry.get("openai")!;
     expect(openai.getCapabilities()).toEqual(["text_to_image", "image_to_image"]);
     const model = providerRegistry.findModel("openai", "gpt-image-1")!;
