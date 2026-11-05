@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
-import { ApiError } from "@/lib/client/api";
+import { ApiError, type ProviderView } from "@/lib/client/api";
 import { useApi } from "@/lib/client/use-session";
 
 interface KeyView {
@@ -12,12 +12,12 @@ interface KeyView {
   updatedAt: string;
 }
 
-const PROVIDERS = [{ id: "openai", name: "OpenAI", hint: "Paid. Used for image generation (GPT Image 1)." }];
 const STATUS_LABEL = { unvalidated: "Not tested", valid: "Valid", invalid: "Rejected" } as const;
 
 export default function KeysPage() {
   const api = useApi();
   const [keys, setKeys] = useState<KeyView[] | null>(null);
+  const [providers, setProviders] = useState<ProviderView[] | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [secret, setSecret] = useState("");
@@ -28,13 +28,18 @@ export default function KeysPage() {
 
   useEffect(() => {
     let live = true;
-    api
-      .get<{ keys: KeyView[] }>("/api/keys")
-      .then((r) => live && setKeys(r.keys))
+    // Providers come from the server-side registry, so new adapters appear here automatically.
+    Promise.all([api.get<{ keys: KeyView[] }>("/api/keys"), api.get<{ providers: ProviderView[] }>("/api/providers")])
+      .then(([k, p]) => {
+        if (!live) return;
+        setKeys(k.keys);
+        setProviders(p.providers);
+      })
       .catch((e) => {
         if (!live) return;
         setMessage({ kind: "error", text: e instanceof ApiError ? e.message : "Could not load keys." });
         setKeys([]);
+        setProviders([]);
       });
     return () => {
       live = false;
@@ -72,8 +77,9 @@ export default function KeysPage() {
       <h1 className="page-title">API keys</h1>
       <p className="muted lead">Bring your own key. Keys are encrypted on the server and can never be shown again; only the last characters are displayed.</p>
       {message && <p className={`notice ${message.kind === "ok" ? "notice-ok" : "notice-error"}`} role={message.kind === "error" ? "alert" : "status"}>{message.text}</p>}
-      {keys === null && <p className="muted" role="status">Loading…</p>}
-      {keys && PROVIDERS.map((p) => {
+      {(keys === null || providers === null) && <p className="muted" role="status">Loading…</p>}
+      {keys && providers && providers.length === 0 && <p className="muted">No providers are available.</p>}
+      {keys && providers && providers.map((p) => {
         const key = keys.find((k) => k.providerId === p.id);
         const showForm = !key || editing === p.id;
         return (
@@ -81,7 +87,7 @@ export default function KeysPage() {
             <div className="row-between">
               <div>
                 <h2 id={`k-${p.id}`}>{p.name}</h2>
-                <p className="muted small">{p.hint}</p>
+                {p.description && <p className="muted small">{p.description}</p>}
               </div>
               {key && <span className={`badge badge-${key.validationStatus}`}>{STATUS_LABEL[key.validationStatus]}</span>}
             </div>

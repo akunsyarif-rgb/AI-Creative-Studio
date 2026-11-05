@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getJobs, getJobById, postJob, postPresign, requestHash } from "./handlers";
+import { createProviderRegistry } from "@/lib/providers/registry";
 import { ALICE, BOB, createTestWorld, jsonRequest as req } from "./test-helpers";
 
 const world = (o: Parameters<typeof createTestWorld>[0] = {}) => {
@@ -78,7 +79,7 @@ describe("POST /api/jobs", () => {
   });
 
   it("fails closed with the default empty catalog", async () => {
-    const { deps } = makeDeps({ deps: { catalog: { supports: () => false, adapter: () => undefined } } });
+    const { deps } = makeDeps({ deps: { providers: createProviderRegistry([]) } });
     expect((await postJob(req("/api/jobs", { token: ALICE, body: validJob }), deps)).status).toBe(422);
   });
 

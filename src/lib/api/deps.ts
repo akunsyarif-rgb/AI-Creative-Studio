@@ -3,10 +3,10 @@ import { after } from "next/server";
 import { z } from "zod";
 import { verifyAppwriteJwt } from "@/lib/appwrite/server";
 import { appwriteAssetsRepository, appwriteJobsRepository, appwriteKeysRepository } from "@/lib/data/appwrite-repositories";
-import { createOpenAIAdapter } from "@/lib/providers/openai";
+import { providerRegistry } from "@/lib/providers";
 import { decryptProviderCredential, encryptProviderCredential } from "@/lib/security/secrets";
 import { createR2Storage } from "@/lib/storage/r2";
-import type { ApiDeps, ProviderCatalog } from "./handlers";
+import type { ApiDeps } from "./handlers";
 import { createRateLimiter } from "./rate-limit";
 
 const storageEnv = z.object({
@@ -15,17 +15,6 @@ const storageEnv = z.object({
   STORAGE_ACCESS_KEY_ID: z.string().min(1),
   STORAGE_SECRET_ACCESS_KEY: z.string().min(1)
 });
-
-const adapters = [createOpenAIAdapter()];
-
-const catalog: ProviderCatalog = {
-  adapter: (providerId) => adapters.find((a) => a.providerId === providerId),
-  supports: (providerId, modelId, capability) =>
-    !!adapters
-      .find((a) => a.providerId === providerId)
-      ?.models()
-      .some((m) => m.modelId === modelId && m.capabilities.includes(capability))
-};
 
 function maxJobCostUsd(): number {
   const parsed = Number(process.env.MAX_JOB_COST_USD);
@@ -54,7 +43,7 @@ export function getApiDeps(): ApiDeps {
       accessKeyId: env.data.STORAGE_ACCESS_KEY_ID,
       secretAccessKey: env.data.STORAGE_SECRET_ACCESS_KEY
     }),
-    catalog
+    providers: providerRegistry
   };
   return cached;
 }

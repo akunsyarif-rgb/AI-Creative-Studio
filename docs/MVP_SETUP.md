@@ -18,3 +18,12 @@
 - Rate limiting is in-memory per server instance.
 - OpenAI prices in `src/lib/providers/openai.ts` are approximate and unverified; `actualCost` is not recorded.
 - No free/local provider is implemented yet, so every generation is paid and requires cost confirmation.
+
+## Adding a provider
+Providers are plugged in through the registry; core execution code never changes.
+1. Copy `src/lib/providers/adapters/_template.ts` to `adapters/<provider>.ts` and implement it
+   (`config`, `getCapabilities`, `validateRequest`, `testKey`, `estimateCost`, `executeJob`). The rules for
+   billing safety and error handling are in the template header.
+2. Register it in `src/lib/providers/index.ts`.
+3. Add a test next to it with a mocked `fetch` (see `adapters/openai.test.ts`).
+The `/dashboard/keys` and `/dashboard/studio` pages read providers, models and parameters from `GET /api/providers`.

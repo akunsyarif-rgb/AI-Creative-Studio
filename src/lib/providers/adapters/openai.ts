@@ -3,11 +3,12 @@ import {
   ProviderError,
   type CostEstimate,
   type ProviderAdapter,
+  type ProviderConfig,
   type ProviderExecutionContext,
   type ProviderJobRequest,
   type ProviderJobResult,
   type ProviderModel
-} from "./types";
+} from "../types";
 
 const BASE_URL = "https://api.openai.com/v1";
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -36,13 +37,33 @@ export const imageParamsSchema = z
 
 const MODELS: ProviderModel[] = [
   {
-    providerId: "openai",
     modelId: OPENAI_IMAGE_MODEL,
     displayName: "GPT Image 1",
     capabilities: ["text_to_image", "image_to_image"],
-    isFreeTier: false
+    isFreeTier: false,
+    parameters: [
+      {
+        key: "size", label: "Size", default: "1024x1024",
+        options: [
+          { value: "1024x1024", label: "Square 1024×1024" },
+          { value: "1024x1536", label: "Portrait 1024×1536" },
+          { value: "1536x1024", label: "Landscape 1536×1024" }
+        ]
+      },
+      {
+        key: "quality", label: "Quality", default: "medium",
+        options: [{ value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" }]
+      }
+    ]
   }
 ];
+
+export const OPENAI_CONFIG: ProviderConfig = {
+  id: "openai",
+  name: "OpenAI",
+  description: "Paid, billed to your own OpenAI account. Image generation and editing.",
+  availableModels: MODELS
+};
 
 type Fetch = typeof fetch;
 
@@ -75,12 +96,8 @@ export function createOpenAIAdapter(fetchImpl: Fetch = fetch): ProviderAdapter {
   }
 
   return {
-    providerId: "openai",
-    displayName: "OpenAI",
-    models: () => MODELS,
-    async capabilities() {
-      return [...new Set(MODELS.flatMap((m) => m.capabilities))];
-    },
+    config: OPENAI_CONFIG,
+    getCapabilities: () => [...new Set(MODELS.flatMap((m) => m.capabilities))],
 
     validateRequest(request) {
       const model = MODELS.find((m) => m.modelId === request.modelId);
@@ -100,7 +117,7 @@ export function createOpenAIAdapter(fetchImpl: Fetch = fetch): ProviderAdapter {
       }
     },
 
-    async validateCredentials(secret) {
+    async testKey(secret) {
       const res = await call("/models", { method: "GET", secret });
       if (res.ok) return { valid: true };
       if (res.status === 401 || res.status === 403) return { valid: false, message: "The provider rejected this API key." };
@@ -120,7 +137,7 @@ export function createOpenAIAdapter(fetchImpl: Fetch = fetch): ProviderAdapter {
       };
     },
 
-    async submitJob(request: ProviderJobRequest, _idempotencyKey: string, context: ProviderExecutionContext): Promise<ProviderJobResult> {
+    async executeJob(request: ProviderJobRequest, _idempotencyKey: string, context: ProviderExecutionContext): Promise<ProviderJobResult> {
       // OpenAI offers no idempotency key for images, so a single attempt is made and never retried.
       const params = imageParamsSchema.parse(request.parameters);
       let res: Response;

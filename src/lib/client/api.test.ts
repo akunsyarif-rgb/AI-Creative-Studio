@@ -65,3 +65,26 @@ describe("pollJob", () => {
     await expect(pollJob(api, "j", () => undefined, { timeoutMs: -1, sleep: async () => undefined })).rejects.toMatchObject({ code: "poll_timeout" });
   });
 });
+
+import { defaultParams, imageModels, imageProviders, type ProviderView } from "./api";
+
+describe("provider view helpers", () => {
+  const m = (modelId: string, capabilities: string[], parameters: ProviderView["models"][0]["parameters"] = []) => ({ modelId, displayName: modelId, capabilities, isFreeTier: false, parameters });
+  const a: ProviderView = { id: "a", name: "A", description: null, models: [m("a1", ["text_to_image", "image_to_image"], [{ key: "size", label: "Size", default: "s", options: [] }]), m("a2", ["text_to_image"])] };
+  const b: ProviderView = { id: "b", name: "B", description: null, models: [m("b1", ["text_to_video"])] };
+
+  it("keeps only providers with image models", () => {
+    expect(imageProviders([a, b]).map((p) => p.id)).toEqual(["a"]);
+  });
+
+  it("filters models by the capability the request needs", () => {
+    expect(imageModels(a, "text_to_image").map((x) => x.modelId)).toEqual(["a1", "a2"]);
+    expect(imageModels(a, "image_to_image").map((x) => x.modelId)).toEqual(["a1"]);
+    expect(imageModels(undefined, "text_to_image")).toEqual([]);
+  });
+
+  it("derives default parameters from the model config", () => {
+    expect(defaultParams(a.models[0])).toEqual({ size: "s" });
+    expect(defaultParams(undefined)).toEqual({});
+  });
+});

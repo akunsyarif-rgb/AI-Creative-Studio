@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createOpenAIAdapter, OPENAI_IMAGE_MODEL } from "./openai";
-import { ProviderError } from "./types";
+import { ProviderError } from "../types";
 import { PNG } from "@/lib/api/test-helpers";
 
 type Call = { url: string; init: RequestInit };
@@ -21,17 +21,17 @@ const req = (over: Record<string, unknown> = {}) => ({
 describe("openai adapter", () => {
   it("validates credentials with GET /models using a bearer token", async () => {
     const { fn, calls } = fakeFetch(() => Response.json({ data: [] }));
-    expect(await createOpenAIAdapter(fn).validateCredentials("sk-test")).toEqual({ valid: true });
+    expect(await createOpenAIAdapter(fn).testKey("sk-test")).toEqual({ valid: true });
     expect(calls[0].url).toBe("https://api.openai.com/v1/models");
     expect((calls[0].init.headers as Record<string, string>).Authorization).toBe("Bearer sk-test");
   });
 
   it("reports rejected keys as invalid, and throws (status unknown) on server errors or network failure", async () => {
-    expect((await createOpenAIAdapter(fakeFetch(() => new Response("{}", { status: 401 })).fn).validateCredentials("x")).valid).toBe(false);
-    await expect(createOpenAIAdapter(fakeFetch(() => new Response("{}", { status: 429 })).fn).validateCredentials("x")).rejects.toMatchObject({ code: "rate_limited" });
-    await expect(createOpenAIAdapter(fakeFetch(() => new Response("{}", { status: 503 })).fn).validateCredentials("x")).rejects.toMatchObject({ code: "unavailable" });
+    expect((await createOpenAIAdapter(fakeFetch(() => new Response("{}", { status: 401 })).fn).testKey("x")).valid).toBe(false);
+    await expect(createOpenAIAdapter(fakeFetch(() => new Response("{}", { status: 429 })).fn).testKey("x")).rejects.toMatchObject({ code: "rate_limited" });
+    await expect(createOpenAIAdapter(fakeFetch(() => new Response("{}", { status: 503 })).fn).testKey("x")).rejects.toMatchObject({ code: "unavailable" });
     const down = (async () => { throw new TypeError("fetch failed"); }) as unknown as typeof fetch;
-    await expect(createOpenAIAdapter(down).validateCredentials("x")).rejects.toBeInstanceOf(ProviderError);
+    await expect(createOpenAIAdapter(down).testKey("x")).rejects.toBeInstanceOf(ProviderError);
   });
 
   it("estimates cost from quality and size, and flags it unverified", async () => {
@@ -41,8 +41,8 @@ describe("openai adapter", () => {
     expect(est!.notes).toMatch(/not verified/i);
     expect((await a.estimateCost(req()))!.amount).toBe(0.042);
     expect(await a.estimateCost(req({ size: "9x9" }))).toBeNull();
-    expect(a.models()[0].pricingVerifiedAt).toBeUndefined();
-    expect(a.models()[0].isFreeTier).toBe(false);
+    expect(a.config.availableModels[0].pricingVerifiedAt).toBeUndefined();
+    expect(a.config.availableModels[0].isFreeTier).toBe(false);
   });
 
   it("rejects unsupported parameters, models and input counts before submission", () => {
@@ -59,7 +59,7 @@ describe("openai adapter", () => {
 
   it("generates an image with one request and returns the decoded PNG", async () => {
     const { fn, calls } = fakeFetch(ok);
-    const res = await createOpenAIAdapter(fn).submitJob(req({ quality: "low" }), "idem", { secret: "sk-test", inputFiles: [] });
+    const res = await createOpenAIAdapter(fn).executeJob(req({ quality: "low" }), "idem", { secret: "sk-test", inputFiles: [] });
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe("https://api.openai.com/v1/images/generations");
     expect(JSON.parse(calls[0].init.body as string)).toEqual({ model: "gpt-image-1", prompt: "a cat", size: "1024x1024", quality: "low", n: 1 });
@@ -69,7 +69,7 @@ describe("openai adapter", () => {
 
   it("edits with multipart upload for image_to_image", async () => {
     const { fn, calls } = fakeFetch(ok);
-    await createOpenAIAdapter(fn).submitJob({ ...req(), capability: "image_to_image", inputAssetIds: ["a"] }, "idem", {
+    await createOpenAIAdapter(fn).executeJob({ ...req(), capability: "image_to_image", inputAssetIds: ["a"] }, "idem", {
       secret: "sk-test", inputFiles: [{ contentType: "image/png", data: PNG }]
     });
     expect(calls[0].url).toBe("https://api.openai.com/v1/images/edits");
@@ -81,7 +81,7 @@ describe("openai adapter", () => {
   it("maps failures to sanitized errors with the right outcome-known flag, and never retries", async () => {
     const run = async (res: Response | Error) => {
       const { fn, calls } = fakeFetch(() => { if (res instanceof Error) throw res; return res; });
-      const err = await createOpenAIAdapter(fn).submitJob(req(), "i", { secret: "sk-SECRET", inputFiles: [] }).catch((e) => e);
+      const err = await createOpenAIAdapter(fn).executeJob(req(), "i", { secret: "sk-SECRET", inputFiles: [] }).catch((e) => e);
       expect(calls).toHaveLength(1);
       return err as ProviderError;
     };
