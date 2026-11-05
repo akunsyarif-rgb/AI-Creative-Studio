@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sniffMime } from "@/lib/storage/sniff";
 import {
   ProviderError,
   type CostEstimate,
@@ -11,66 +12,69 @@ import {
 } from "../types";
 
 /**
- * OpenRouter adapter: image generation/editing through the chat-completions
- * endpoint with `modalities: ["image","text"]`; the image comes back as a
- * base64 data URL in `choices[0].message.images[0].image_url.url`.
+ * OpenRouter adapter using the standard text-to-image request shape:
+ * `POST /images/generations` with `{ model, prompt, n, size, response_format: "b64_json" }`,
+ * answered with `{ data: [{ b64_json, media_type? }] }`.
  *
- * UNVERIFIED: this was written without live access to openrouter.ai. Model ids,
- * the response shape and the key-check endpoint follow OpenRouter's public docs
- * as understood at the time and MUST be confirmed with a real key before
- * relying on them. A wrong model id fails safely with a 4xx (outcome known,
- * nothing billed). Prices below are rough placeholders, never "free".
+ * UNVERIFIED: written without live access to openrouter.ai. Whether these model
+ * ids exist on OpenRouter, the exact endpoint path and the accepted parameters
+ * MUST be confirmed with a real key. A wrong model id, path or parameter fails
+ * safely with a 4xx (outcome known, nothing billed). Prices are rough
+ * placeholders (deliberately on the high side), never "free".
  */
 
 const BASE_URL = "https://openrouter.ai/api/v1";
 const REQUEST_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 25 * 1024 * 1024;
 
-export const OPENROUTER_GEMINI_FLASH_IMAGE = "google/gemini-2.5-flash-image";
-export const OPENROUTER_GPT_IMAGE_MINI = "openai/gpt-5-image-mini";
+export const OPENROUTER_FLUX_SCHNELL = "black-forest-labs/flux-schnell";
+export const OPENROUTER_SD3 = "stabilityai/stable-diffusion-3";
+
+const SIZES = ["1024x1024", "1024x1536", "1536x1024"] as const;
+const SIZE_PARAM = {
+  key: "size", label: "Size", default: "1024x1024",
+  options: [
+    { value: "1024x1024", label: "Square 1024×1024" },
+    { value: "1024x1536", label: "Portrait 1024×1536" },
+    { value: "1536x1024", label: "Landscape 1536×1024" }
+  ]
+};
+
+const paramsSchema = z
+  .object({
+    prompt: z.string().trim().min(1).max(4000),
+    size: z.enum(SIZES).default("1024x1024")
+  })
+  .strict();
 
 interface ModelSpec {
   model: ProviderModel;
-  /** Strict parameter schema (prompt + this model's tunables). */
-  schema: z.ZodType<{ prompt: string; aspect_ratio?: string }>;
   priceUsd: number;
   priceNote: string;
 }
 
-const prompt = z.string().trim().min(1).max(4000);
-const ASPECTS = ["1:1", "2:3", "3:2", "9:16", "16:9"] as const;
-
 const SPECS: ModelSpec[] = [
   {
     model: {
-      modelId: OPENROUTER_GEMINI_FLASH_IMAGE,
-      displayName: "Gemini 2.5 Flash Image",
-      capabilities: ["text_to_image", "image_to_image"],
+      modelId: OPENROUTER_FLUX_SCHNELL,
+      displayName: "FLUX.1 schnell (fast)",
+      capabilities: ["text_to_image"],
       isFreeTier: false,
-      parameters: [
-        {
-          key: "aspect_ratio", label: "Aspect ratio", default: "1:1",
-          options: [
-            { value: "1:1", label: "Square 1:1" }, { value: "2:3", label: "Portrait 2:3" }, { value: "3:2", label: "Landscape 3:2" },
-            { value: "9:16", label: "Tall 9:16" }, { value: "16:9", label: "Wide 16:9" }
-          ]
-        }
-      ]
+      parameters: [SIZE_PARAM]
     },
-    schema: z.object({ prompt, aspect_ratio: z.enum(ASPECTS).default("1:1") }).strict(),
-    priceUsd: 0.039,
-    priceNote: "Roughly $0.04 per image (placeholder; verify on OpenRouter)."
+    priceUsd: 0.01,
+    priceNote: "Rough upper estimate (this model is usually well under a cent); not verified against OpenRouter pricing."
   },
   {
     model: {
-      modelId: OPENROUTER_GPT_IMAGE_MINI,
-      displayName: "GPT-5 Image Mini",
-      capabilities: ["text_to_image", "image_to_image"],
-      isFreeTier: false
+      modelId: OPENROUTER_SD3,
+      displayName: "Stable Diffusion 3",
+      capabilities: ["text_to_image"],
+      isFreeTier: false,
+      parameters: [SIZE_PARAM]
     },
-    schema: z.object({ prompt }).strict(),
-    priceUsd: 0.1,
-    priceNote: "Price unknown: this is a conservative upper bound, not a quote. Actual billing is token-based."
+    priceUsd: 0.07,
+    priceNote: "Rough estimate; not verified against OpenRouter pricing."
   }
 ];
 
@@ -83,7 +87,8 @@ export const OPENROUTER_CONFIG: ProviderConfig = {
 
 type Fetch = typeof fetch;
 
-const DATA_URL = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/;
+const BASE64 = /^[A-Za-z0-9+/=\s]+$/;
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 function mapStatus(status: number): ProviderError {
   if (status === 401) return new ProviderError("auth", "The provider rejected the API key.", true);
@@ -124,13 +129,11 @@ export function createOpenRouterAdapter(fetchImpl: Fetch = fetch): ProviderAdapt
       if (!s || !s.model.capabilities.includes(request.capability)) {
         throw new ProviderError("invalid_request", "Unsupported model or capability.", true);
       }
-      const parsed = s.schema.safeParse(request.parameters);
+      const parsed = paramsSchema.safeParse(request.parameters);
       if (!parsed.success) {
         throw new ProviderError("invalid_request", `Invalid parameters: ${parsed.error.issues.map((i) => i.path.join(".") || "request").join(", ")}`, true);
       }
-      const edit = request.capability === "image_to_image";
-      if (edit && request.inputAssetIds.length !== 1) throw new ProviderError("invalid_request", "image_to_image requires exactly one input image.", true);
-      if (!edit && request.inputAssetIds.length > 0) throw new ProviderError("invalid_request", "text_to_image does not accept input images.", true);
+      if (request.inputAssetIds.length > 0) throw new ProviderError("invalid_request", "This model does not accept input images.", true);
     },
 
     async testKey(secret) {
@@ -148,52 +151,33 @@ export function createOpenRouterAdapter(fetchImpl: Fetch = fetch): ProviderAdapt
     },
 
     async executeJob(request: ProviderJobRequest, _idempotencyKey: string, context: ProviderExecutionContext): Promise<ProviderJobResult> {
-      const s = spec(request.modelId);
-      if (!s) throw new ProviderError("invalid_request", "Unsupported model.", true);
-      const params = s.schema.parse(request.parameters);
-
-      const content: unknown =
-        request.capability === "image_to_image"
-          ? [
-              { type: "text", text: params.prompt },
-              {
-                type: "image_url",
-                image_url: { url: `data:${context.inputFiles[0]?.contentType};base64,${Buffer.from(context.inputFiles[0]?.data ?? []).toString("base64")}` }
-              }
-            ]
-          : params.prompt;
-      if (request.capability === "image_to_image" && !context.inputFiles[0]) {
-        throw new ProviderError("invalid_request", "Missing input image.", true);
-      }
+      if (!spec(request.modelId)) throw new ProviderError("invalid_request", "Unsupported model.", true);
+      const params = paramsSchema.parse(request.parameters);
 
       // One attempt only; a billable call is never retried automatically.
-      const res = await call("/chat/completions", {
+      const res = await call("/images/generations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: request.modelId,
-          messages: [{ role: "user", content }],
-          modalities: ["image", "text"],
-          ...(params.aspect_ratio ? { image_config: { aspect_ratio: params.aspect_ratio } } : {})
-        }),
+        body: JSON.stringify({ model: request.modelId, prompt: params.prompt, n: 1, size: params.size, response_format: "b64_json" }),
         secret: context.secret
       });
       if (!res.ok) throw mapStatus(res.status);
 
-      const body = (await res.json().catch(() => null)) as {
-        error?: unknown;
-        choices?: { message?: { images?: { image_url?: { url?: string } }[] } }[];
-      } | null;
-      // A 200 carrying an error object may still have consumed tokens.
+      const body = (await res.json().catch(() => null)) as { error?: unknown; data?: { b64_json?: string; media_type?: string }[] } | null;
+      // A 200 carrying an error object may still have been billed.
       if (!body || body.error) throw new ProviderError("unavailable", "The provider returned an error response.", false);
 
-      const url = body.choices?.[0]?.message?.images?.[0]?.image_url?.url;
-      const match = url ? DATA_URL.exec(url) : null;
-      // Remote image URLs are deliberately not fetched (SSRF); only inline data URLs are accepted.
-      if (!match) throw new ProviderError("unknown", "The provider returned no usable image.", false);
-      const data = Uint8Array.from(Buffer.from(match[2], "base64"));
+      // Only inline base64 is accepted; remote image URLs are deliberately never fetched (SSRF).
+      const item = body.data?.[0];
+      const b64 = item?.b64_json;
+      if (!b64 || !BASE64.test(b64)) throw new ProviderError("unknown", "The provider returned no usable image.", false);
+      const data = Uint8Array.from(Buffer.from(b64, "base64"));
       if (data.length === 0 || data.length > MAX_OUTPUT_BYTES) throw new ProviderError("unknown", "The provider returned an invalid image.", false);
-      return { status: "validating", outputFiles: [{ contentType: match[1], data }] };
+      // Trust the bytes, not the label: sniff the real type, falling back to the reported one only if it is accepted.
+      const sniffed = sniffMime(data);
+      const contentType = sniffed && IMAGE_TYPES.has(sniffed) ? sniffed : item.media_type && IMAGE_TYPES.has(item.media_type) ? item.media_type : null;
+      if (!contentType) throw new ProviderError("unknown", "The provider returned an unsupported image type.", false);
+      return { status: "validating", outputFiles: [{ contentType, data }] };
     }
   };
 }
