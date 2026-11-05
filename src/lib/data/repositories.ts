@@ -50,4 +50,24 @@ export interface AssetsRepository {
   }): Promise<AssetRecord>;
   /** Returns only assets owned by `ownerId`; callers compare counts to detect foreign/missing ids. */
   findOwned(ownerId: string, ids: string[]): Promise<AssetRecord[]>;
+  setStatus(id: string, status: AssetRecord["status"]): Promise<void>;
+}
+
+/** Public metadata only. Ciphertext never leaves the repository layer except via `getCiphertext`. */
+export interface KeyMetadata {
+  providerId: string;
+  last4: string | null;
+  validationStatus: "unvalidated" | "valid" | "invalid";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KeysRepository {
+  /** Atomic; returns null if a key for this provider already exists. */
+  create(input: { ownerId: string; providerId: string; ciphertext: string; keyId: string; last4: string | null }): Promise<KeyMetadata | null>;
+  /** Returns null if no key exists. */
+  replace(input: { ownerId: string; providerId: string; ciphertext: string; keyId: string; last4: string | null }): Promise<KeyMetadata | null>;
+  get(ownerId: string, providerId: string): Promise<KeyMetadata | null>;
+  list(ownerId: string): Promise<KeyMetadata[]>;
+  delete(ownerId: string, providerId: string): Promise<boolean>;
 }

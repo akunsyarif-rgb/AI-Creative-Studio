@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { authenticate, type TokenVerifier } from "@/lib/auth/session";
-import type { AssetsRepository, JobsRepository } from "@/lib/data/repositories";
+import type { AssetsRepository, JobsRepository, KeysRepository } from "@/lib/data/repositories";
 import { CAPABILITIES, type Capability } from "@/lib/providers/types";
 import { StorageError, newObjectKey, validateUpload, type ObjectStorage } from "@/lib/storage/r2";
 import { apiError, internalError, json, parseJson, unauthorized } from "./http";
@@ -11,7 +11,14 @@ export interface ProviderCatalog {
   supports(providerId: string, modelId: string, capability: Capability): boolean;
 }
 
+/** Encrypts provider credentials. The default implementation wraps `security/secrets.ts`. */
+export interface CredentialVault {
+  encrypt(plaintext: string, context: string): Promise<string>;
+}
+
 export interface ApiDeps {
+  keys: KeysRepository;
+  vault: CredentialVault;
   verifyToken: TokenVerifier;
   jobs: JobsRepository;
   assets: AssetsRepository;
@@ -142,6 +149,44 @@ export async function postPresign(request: Request, deps: ApiDeps): Promise<Resp
       }
       throw error;
     }
+  } catch (error) {
+    return internalError(error);
+  }
+}
+
+
+const assetIdSchema = id;
+
+/**
+ * Confirms a direct-to-R2 upload: HEADs the object and requires the exact size
+ * and MIME type declared at presign time. A mismatch rejects the asset and
+ * deletes the object. Only then does the asset become usable (`uploaded`).
+ * NOTE: this trusts R2's stored Content-Type, which the signed URL pins; it is
+ * not a magic-byte inspection of the file contents.
+ */
+export async function postConfirmUpload(request: Request, deps: ApiDeps, assetId: string): Promise<Response> {
+  try {
+    const user = await authenticate(request, deps.verifyToken);
+    if (!user) return unauthorized();
+    if (!assetIdSchema.safeParse(assetId).success) return apiError(404, "not_found", "Asset not found.");
+
+    const [asset] = await deps.assets.findOwned(user.userId, [assetId]);
+    if (!asset) return apiError(404, "not_found", "Asset not found.");
+    if (asset.status === "uploaded") return json(200, { asset: { id: asset.id, status: "uploaded" } });
+    if (asset.status === "rejected") return apiError(409, "asset_rejected", "This upload was rejected. Request a new upload.");
+
+    const head = await deps.storage.headObject({ ownerId: user.userId, key: asset.objectKey });
+    if (!head) return apiError(409, "upload_not_found", "No uploaded file found yet. Upload to the signed URL, then confirm.");
+
+    const typeMatches = (head.contentType ?? "").toLowerCase() === asset.contentType.toLowerCase();
+    if (head.size !== asset.size || !typeMatches) {
+      await deps.assets.setStatus(asset.id, "rejected");
+      await deps.storage.deleteObject({ ownerId: user.userId, key: asset.objectKey });
+      return apiError(422, "upload_mismatch", "The uploaded file does not match the declared size or type and was removed.");
+    }
+
+    await deps.assets.setStatus(asset.id, "uploaded");
+    return json(200, { asset: { id: asset.id, status: "uploaded", contentType: asset.contentType, size: asset.size } });
   } catch (error) {
     return internalError(error);
   }

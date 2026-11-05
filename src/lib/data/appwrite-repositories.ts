@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { AppwriteException, Query, type Models } from "node-appwrite";
 import { adminDatabases } from "@/lib/appwrite/server";
 import { COLLECTIONS, documentPermissions } from "@/lib/appwrite/schema";
-import type { AssetRecord, AssetsRepository, JobRecord, JobsRepository, NewJob } from "./repositories";
+import type { AssetRecord, AssetsRepository, JobRecord, JobsRepository, KeyMetadata, KeysRepository, NewJob } from "./repositories";
 
 /** Deterministic id => duplicate (owner, idempotencyKey) hits Appwrite's 409, atomically. */
 export function jobDocumentId(ownerId: string, idempotencyKey: string): string {
@@ -83,6 +83,81 @@ export function appwriteAssetsRepository(): AssetsRepository {
         queries: [Query.equal("$id", ids), Query.equal("ownerId", ownerId), Query.limit(ids.length)]
       });
       return res.documents.map(toAsset);
+    },
+    async setStatus(id, status) {
+      await databases.updateDocument({ databaseId, collectionId, documentId: id, data: { status } });
+    }
+  };
+}
+
+type KeyDoc = Models.Document & { ownerId?: string; validatedAt?: string | null; providerId: string; last4?: string | null; validationStatus: KeyMetadata["validationStatus"] };
+
+const toKeyMeta = (d: KeyDoc): KeyMetadata => ({
+  providerId: d.providerId, last4: d.last4 ?? null, validationStatus: d.validationStatus,
+  createdAt: d.$createdAt, updatedAt: d.$updatedAt
+});
+
+const isCode = (error: unknown, code: number) => error instanceof AppwriteException && error.code === code;
+
+export function appwriteKeysRepository(): KeysRepository {
+  const { databases, databaseId } = adminDatabases();
+  const collectionId = COLLECTIONS.keys;
+  // Owner-derived id: a user can only ever address their own key document.
+  const idFor = (ownerId: string, providerId: string) => jobDocumentId(ownerId, `key:${providerId}`);
+  return {
+    async create({ ownerId, providerId, ...secret }) {
+      try {
+        const doc = await databases.createDocument<KeyDoc>({
+          databaseId, collectionId, documentId: idFor(ownerId, providerId),
+          data: { ownerId, providerId, ...secret, validationStatus: "unvalidated" },
+          permissions: documentPermissions("keys", ownerId)
+        });
+        return toKeyMeta(doc);
+      } catch (error) {
+        if (isCode(error, 409)) return null;
+        throw error;
+      }
+    },
+    async replace({ ownerId, providerId, ...secret }) {
+      try {
+        const doc = await databases.updateDocument<KeyDoc>({
+          databaseId, collectionId, documentId: idFor(ownerId, providerId),
+          data: { ...secret, validationStatus: "unvalidated", validatedAt: null }
+        });
+        return toKeyMeta(doc);
+      } catch (error) {
+        if (isCode(error, 404)) return null;
+        throw error;
+      }
+    },
+    async get(ownerId, providerId) {
+      try {
+        // Select only non-secret attributes so ciphertext is never loaded here.
+        const doc = await databases.getDocument<KeyDoc>({
+          databaseId, collectionId, documentId: idFor(ownerId, providerId),
+          queries: [Query.select(["providerId", "last4", "validationStatus"])]
+        });
+        return toKeyMeta(doc);
+      } catch (error) {
+        if (isCode(error, 404)) return null;
+        throw error;
+      }
+    },
+    async list(ownerId) {
+      const res = await databases.listDocuments<KeyDoc>({
+        databaseId, collectionId,
+        queries: [Query.equal("ownerId", ownerId), Query.select(["providerId", "last4", "validationStatus"]), Query.limit(100)]
+      });
+      return res.documents.map(toKeyMeta);
+    },
+    async delete(ownerId, providerId) {
+      try {
+        await databases.deleteDocument({ databaseId, collectionId, documentId: idFor(ownerId, providerId) });
+        return true;
+      } catch (error) {
+        if (isCode(error, 404)) return false;
+        throw error;
+      }
     }
   };
 }
