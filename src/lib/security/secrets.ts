@@ -1,13 +1,44 @@
 import "server-only";
+import {
+  decryptWithKeyring,
+  encryptWithKeyring,
+  needsRotation as needsRotationCore,
+  parseKeyring,
+  rotateWithKeyring,
+  type Keyring
+} from "./secrets-core";
 
 /**
- * Deliberate fail-closed boundary. Implement authenticated encryption and key
- * rotation before enabling credential persistence or provider execution.
+ * Server-only boundary for BYOK provider credentials. Keys come from
+ * CREDENTIAL_ENCRYPTION_KEYS ("activeId:b64,olderId:b64"); never log or return
+ * plaintext. `context` must identify the owner and provider (see
+ * `credentialContext`) so ciphertext cannot be moved between rows.
  */
-export async function encryptProviderCredential(_plaintext: string): Promise<string> {
-  throw new Error("Credential encryption is not configured. Provider key storage is disabled.");
+
+let cached: { raw: string | undefined; keyring: Keyring } | undefined;
+
+function keyring(): Keyring {
+  const raw = process.env.CREDENTIAL_ENCRYPTION_KEYS;
+  if (!cached || cached.raw !== raw) cached = { raw, keyring: parseKeyring(raw) };
+  return cached.keyring;
 }
 
-export async function decryptProviderCredential(_ciphertext: string): Promise<string> {
-  throw new Error("Credential decryption is not configured. Provider execution is disabled.");
+export function credentialContext(ownerId: string, providerId: string): string {
+  return `provider-credential:${ownerId}:${providerId}`;
+}
+
+export async function encryptProviderCredential(plaintext: string, context: string): Promise<string> {
+  return encryptWithKeyring(keyring(), plaintext, context);
+}
+
+export async function decryptProviderCredential(ciphertext: string, context: string): Promise<string> {
+  return decryptWithKeyring(keyring(), ciphertext, context);
+}
+
+export function credentialNeedsRotation(ciphertext: string): boolean {
+  return needsRotationCore(keyring(), ciphertext);
+}
+
+export async function rotateProviderCredential(ciphertext: string, context: string): Promise<string> {
+  return rotateWithKeyring(keyring(), ciphertext, context);
 }
