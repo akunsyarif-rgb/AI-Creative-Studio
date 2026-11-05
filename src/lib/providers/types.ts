@@ -1,7 +1,10 @@
-export type Capability =
-  | "text_to_image" | "image_to_image" | "image_edit" | "inpaint" | "outpaint" | "image_upscale"
-  | "text_to_video" | "image_to_video" | "video_to_video" | "video_edit"
-  | "background_remove" | "object_remove" | "object_replace" | "face_replace" | "character_consistency";
+export const CAPABILITIES = [
+  "text_to_image", "image_to_image", "image_edit", "inpaint", "outpaint", "image_upscale",
+  "text_to_video", "image_to_video", "video_to_video", "video_edit",
+  "background_remove", "object_remove", "object_replace", "face_replace", "character_consistency"
+] as const;
+
+export type Capability = (typeof CAPABILITIES)[number];
 
 export type JobStatus = "queued" | "submitted" | "processing" | "validating" | "completed" | "failed" | "cancelled";
 

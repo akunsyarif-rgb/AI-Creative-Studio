@@ -1,4 +1,4 @@
-"use client";
+import Link from "next/link";
 
 const workspaces = [
   { title: "Image Studio", description: "Create images, edit references, and upscale results." },
@@ -11,7 +11,7 @@ export default function Home() {
   return (
     <main className="shell">
       <header className="topbar">
-        <a className="brand" href="/"><span className="brand-mark">✳</span>AI Creative Studio</a>
+        <Link className="brand" href="/"><span className="brand-mark">✳</span>AI Creative Studio</Link>
         <span className="private-label">PERSONAL WORKSPACE</span>
       </header>
       <section className="hero">
