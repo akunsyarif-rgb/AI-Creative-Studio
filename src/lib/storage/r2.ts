@@ -90,6 +90,10 @@ export interface ObjectStorage {
   /** Returns null if the object does not exist. */
   headObject(input: { ownerId: string; key: string }): Promise<ObjectInfo | null>;
   deleteObject(input: { ownerId: string; key: string }): Promise<void>;
+  /** Server-side read. `bytes` limits to the first N bytes (ranged GET); otherwise `maxBytes` caps the body. */
+  readObject(input: { ownerId: string; key: string; bytes?: number; maxBytes?: number }): Promise<Uint8Array>;
+  /** Server-side write of a generated output. Never overwrites: fails if the key exists. */
+  putObject(input: { ownerId: string; key: string; contentType: string; data: Uint8Array }): Promise<void>;
   presignUpload(input: { ownerId: string; key: string; contentType: string; size: number; ttlSeconds?: number }): Promise<PresignedUpload>;
   presignDownload(input: { ownerId: string; key: string; filename?: string; ttlSeconds?: number }): Promise<PresignedDownload>;
 }
@@ -119,6 +123,25 @@ export function createR2Storage(
         if (e.name === "NotFound" || e.name === "NoSuchKey" || e.$metadata?.httpStatusCode === 404) return null;
         throw error;
       }
+    },
+
+    async readObject({ ownerId, key, bytes, maxBytes = 25 * MB }) {
+      assertOwnedKey(ownerId, key);
+      const res = await client.send(
+        new GetObjectCommand({ Bucket: config.bucket, Key: key, ...(bytes ? { Range: `bytes=0-${bytes - 1}` } : {}) })
+      );
+      if (!res.Body) throw new StorageError("invalid_key", "Object has no body.");
+      const data = await res.Body.transformToByteArray();
+      if (data.length > (bytes ?? maxBytes)) throw new StorageError("too_large", "Object exceeds the read limit.");
+      return data;
+    },
+
+    async putObject({ ownerId, key, contentType, data }) {
+      assertOwnedKey(ownerId, key);
+      validateUpload(contentType, data.length);
+      await client.send(
+        new PutObjectCommand({ Bucket: config.bucket, Key: key, Body: data, ContentType: contentType, IfNoneMatch: "*" })
+      );
     },
 
     async deleteObject({ ownerId, key }) {

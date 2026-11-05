@@ -70,6 +70,8 @@ export const COLLECTION_SPECS: CollectionSpec[] = [
       { type: "string", key: "providerJobId", size: 256, required: false },
       { type: "integer", key: "progress", required: false, min: 0, max: 100 },
       { type: "string", key: "errorCode", size: 64, required: false },
+      { type: "string", key: "errorMessage", size: 256, required: false },
+      { type: "string", key: "outputAssetIds", size: 36, required: false, array: true },
       { type: "float", key: "estimatedCost", required: false, min: 0 },
       { type: "float", key: "actualCost", required: false, min: 0 },
       { type: "string", key: "currency", size: 3, required: false }

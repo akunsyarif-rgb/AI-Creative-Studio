@@ -14,6 +14,8 @@ export interface JobRecord {
   requestHash: string;
   progress: number | null;
   errorCode: string | null;
+  errorMessage: string | null;
+  outputAssetIds: string[];
   estimatedCost: number | null;
   currency: string | null;
   createdAt: string;
@@ -22,12 +24,23 @@ export interface JobRecord {
 export type NewJob = Pick<
   JobRecord,
   "ownerId" | "projectId" | "capability" | "providerId" | "modelId" | "inputAssetIds" | "parameters" | "idempotencyKey" | "requestHash"
->;
+> & { estimatedCost?: number; currency?: string };
+
+export interface JobPatch {
+  status?: JobStatus;
+  progress?: number;
+  errorCode?: string;
+  errorMessage?: string;
+  outputAssetIds?: string[];
+}
 
 export interface JobsRepository {
   /** Atomic: the same (owner, idempotencyKey) can only ever create one job. */
   createIdempotent(job: NewJob): Promise<{ job: JobRecord; created: boolean }>;
   listByOwner(ownerId: string, limit: number): Promise<JobRecord[]>;
+  getOwned(ownerId: string, id: string): Promise<JobRecord | null>;
+  /** Server-side only. Callers must validate the transition with `canTransitionJob`. */
+  update(id: string, patch: JobPatch): Promise<void>;
 }
 
 export interface AssetRecord {
@@ -47,6 +60,16 @@ export interface AssetsRepository {
     contentType: string;
     size: number;
     originalName?: string;
+  }): Promise<AssetRecord>;
+  /** Records a server-generated output (already stored in R2) as an `uploaded` asset. */
+  createGenerated(input: {
+    ownerId: string;
+    projectId?: string;
+    objectKey: string;
+    contentType: string;
+    size: number;
+    sourceJobId: string;
+    parentAssetId?: string;
   }): Promise<AssetRecord>;
   /** Returns only assets owned by `ownerId`; callers compare counts to detect foreign/missing ids. */
   findOwned(ownerId: string, ids: string[]): Promise<AssetRecord[]>;
@@ -68,6 +91,9 @@ export interface KeysRepository {
   /** Returns null if no key exists. */
   replace(input: { ownerId: string; providerId: string; ciphertext: string; keyId: string; last4: string | null }): Promise<KeyMetadata | null>;
   get(ownerId: string, providerId: string): Promise<KeyMetadata | null>;
+  /** Only for server-side execution: returns the encrypted secret. Never expose in responses. */
+  getCiphertext(ownerId: string, providerId: string): Promise<string | null>;
+  setValidation(ownerId: string, providerId: string, status: "valid" | "invalid"): Promise<boolean>;
   list(ownerId: string): Promise<KeyMetadata[]>;
   delete(ownerId: string, providerId: string): Promise<boolean>;
 }

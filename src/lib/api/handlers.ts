@@ -3,22 +3,38 @@ import { z } from "zod";
 import { authenticate, type TokenVerifier } from "@/lib/auth/session";
 import type { AssetsRepository, JobsRepository, KeysRepository } from "@/lib/data/repositories";
 import { CAPABILITIES, type Capability } from "@/lib/providers/types";
+import { SNIFF_BYTES, sniffMime } from "@/lib/storage/sniff";
 import { StorageError, newObjectKey, validateUpload, type ObjectStorage } from "@/lib/storage/r2";
+import { ProviderError, type ProviderAdapter } from "@/lib/providers/types";
+import { credentialContext } from "@/lib/security/credential-context";
+import { executeJob } from "@/lib/jobs/execute";
 import { apiError, internalError, json, parseJson, unauthorized } from "./http";
+import { enforceRate, type RateLimiter } from "./rate-limit";
 
 /** Which provider/model pairs can run which capability. Empty until adapters are registered. */
 export interface ProviderCatalog {
   supports(providerId: string, modelId: string, capability: Capability): boolean;
+  adapter(providerId: string): ProviderAdapter | undefined;
 }
 
 /** Encrypts provider credentials. The default implementation wraps `security/secrets.ts`. */
 export interface CredentialVault {
   encrypt(plaintext: string, context: string): Promise<string>;
+  decrypt(ciphertext: string, context: string): Promise<string>;
+}
+
+/** Runs work after the response is sent. Not durable: see README limitations. */
+export interface Scheduler {
+  run(task: () => Promise<void>): void;
 }
 
 export interface ApiDeps {
   keys: KeysRepository;
   vault: CredentialVault;
+  limiter: RateLimiter;
+  scheduler: Scheduler;
+  /** Hard per-job spend ceiling in USD. Jobs estimated above it are refused. */
+  maxJobCostUsd: number;
   verifyToken: TokenVerifier;
   jobs: JobsRepository;
   assets: AssetsRepository;
@@ -38,7 +54,9 @@ export const createJobSchema = z.object({
     .record(z.string(), z.unknown())
     .default({})
     .refine((p) => JSON.stringify(p).length <= 16000, "parameters too large"),
-  idempotencyKey: z.string().min(8).max(128).regex(/^[\w.:-]+$/, "Invalid idempotency key")
+  idempotencyKey: z.string().min(8).max(128).regex(/^[\w.:-]+$/, "Invalid idempotency key"),
+  /** Explicit consent to spend up to this many USD. Required for paid models; not part of the request hash. */
+  confirmedMaxCostUsd: z.number().positive().max(1000).optional()
 });
 
 export const presignSchema = z.object({
@@ -66,7 +84,8 @@ export function requestHash(input: z.infer<typeof createJobSchema>): string {
 function publicJob(job: Awaited<ReturnType<JobsRepository["listByOwner"]>>[number]) {
   return {
     id: job.id, projectId: job.projectId, capability: job.capability, providerId: job.providerId, modelId: job.modelId,
-    status: job.status, inputAssetIds: job.inputAssetIds, progress: job.progress, errorCode: job.errorCode,
+    status: job.status, inputAssetIds: job.inputAssetIds, outputAssetIds: job.outputAssetIds, progress: job.progress,
+    errorCode: job.errorCode, errorMessage: job.errorMessage,
     estimatedCost: job.estimatedCost === null ? null : { amount: job.estimatedCost, currency: job.currency, isEstimate: true },
     createdAt: job.createdAt
   };
@@ -76,16 +95,29 @@ export async function postJob(request: Request, deps: ApiDeps): Promise<Response
   try {
     const user = await authenticate(request, deps.verifyToken);
     if (!user) return unauthorized();
+    const limited = enforceRate(deps.limiter, "jobs", user.userId);
+    if (limited) return limited;
     const body = await parseJson(request, createJobSchema);
     if (!body.ok) return body.response;
-    const input = body.data;
+    const { confirmedMaxCostUsd, ...input } = body.data;
 
-    // Fail closed: no adapter => nothing is persisted or submitted.
-    if (!deps.catalog.supports(input.providerId, input.modelId, input.capability)) {
+    // Fail closed: unknown provider/model/capability => nothing is persisted or submitted.
+    const adapter = deps.catalog.adapter(input.providerId);
+    if (!adapter || !deps.catalog.supports(input.providerId, input.modelId, input.capability)) {
       return apiError(422, "unsupported_capability", "This provider/model does not support the requested capability.");
     }
 
     const uniqueAssetIds = [...new Set(input.inputAssetIds)];
+    const jobRequest = {
+      capability: input.capability, modelId: input.modelId, inputAssetIds: uniqueAssetIds, parameters: input.parameters
+    };
+    try {
+      adapter.validateRequest(jobRequest);
+    } catch (error) {
+      if (error instanceof ProviderError) return apiError(422, "invalid_parameters", error.message);
+      throw error;
+    }
+
     if (uniqueAssetIds.length) {
       const owned = await deps.assets.findOwned(user.userId, uniqueAssetIds);
       const ready = owned.filter((a) => a.status === "uploaded");
@@ -95,16 +127,108 @@ export async function postJob(request: Request, deps: ApiDeps): Promise<Response
       }
     }
 
+    if (!(await deps.keys.get(user.userId, input.providerId))) {
+      return apiError(422, "provider_key_missing", "Add an API key for this provider first.");
+    }
+
+    // Cost disclosure and consent: never spend silently, never exceed the ceiling.
+    const estimate = await adapter.estimateCost(jobRequest);
+    if (estimate) {
+      if (estimate.amount > deps.maxJobCostUsd) {
+        return apiError(422, "budget_exceeded", `Estimated cost exceeds the per-job limit of ${deps.maxJobCostUsd} ${estimate.currency}.`, { estimate });
+      }
+      if (confirmedMaxCostUsd === undefined || confirmedMaxCostUsd < estimate.amount) {
+        return apiError(409, "cost_confirmation_required", "This is a paid request. Confirm the estimated cost to continue.", { estimate });
+      }
+    }
+
     const hash = requestHash({ ...input, inputAssetIds: uniqueAssetIds });
     const { job, created } = await deps.jobs.createIdempotent({
       ownerId: user.userId, projectId: input.projectId, capability: input.capability, providerId: input.providerId,
       modelId: input.modelId, inputAssetIds: uniqueAssetIds, parameters: input.parameters,
-      idempotencyKey: input.idempotencyKey, requestHash: hash
+      idempotencyKey: input.idempotencyKey, requestHash: hash,
+      ...(estimate ? { estimatedCost: estimate.amount, currency: estimate.currency } : {})
     });
     if (!created && job.requestHash !== hash) {
       return apiError(409, "idempotency_conflict", "This idempotency key was already used with different parameters.");
     }
-    return json(created ? 201 : 200, { job: publicJob(job), duplicate: !created });
+    // Only the request that created the job may execute it; duplicates never re-submit.
+    if (created) {
+      deps.scheduler.run(() =>
+        executeJob(
+          {
+            jobs: deps.jobs, assets: deps.assets, keys: deps.keys, storage: deps.storage, vault: deps.vault,
+            adapter: (id) => deps.catalog.adapter(id)
+          },
+          job
+        )
+      );
+    }
+    return json(created ? 202 : 200, { job: publicJob(job), duplicate: !created });
+  } catch (error) {
+    return internalError(error);
+  }
+}
+
+export async function getJobById(request: Request, deps: ApiDeps, jobId: string): Promise<Response> {
+  try {
+    const user = await authenticate(request, deps.verifyToken);
+    if (!user) return unauthorized();
+    if (!id.safeParse(jobId).success) return apiError(404, "not_found", "Job not found.");
+    const job = await deps.jobs.getOwned(user.userId, jobId);
+    return job ? json(200, { job: publicJob(job) }) : apiError(404, "not_found", "Job not found.");
+  } catch (error) {
+    return internalError(error);
+  }
+}
+
+/** Authorized, short-lived download link for one of the caller's uploaded/generated assets. */
+export async function getAssetDownload(request: Request, deps: ApiDeps, assetId: string): Promise<Response> {
+  try {
+    const user = await authenticate(request, deps.verifyToken);
+    if (!user) return unauthorized();
+    const limited = enforceRate(deps.limiter, "uploads", user.userId);
+    if (limited) return limited;
+    if (!id.safeParse(assetId).success) return apiError(404, "not_found", "Asset not found.");
+    const [asset] = await deps.assets.findOwned(user.userId, [assetId]);
+    if (!asset || asset.status !== "uploaded") return apiError(404, "not_found", "Asset not found.");
+    const download = await deps.storage.presignDownload({ ownerId: user.userId, key: asset.objectKey });
+    return json(200, { asset: { id: asset.id, contentType: asset.contentType, size: asset.size }, download });
+  } catch (error) {
+    return internalError(error);
+  }
+}
+
+/** Validates the saved BYOK against the real provider API and records the result. */
+export async function postProviderTest(request: Request, deps: ApiDeps, providerId: string): Promise<Response> {
+  try {
+    const user = await authenticate(request, deps.verifyToken);
+    if (!user) return unauthorized();
+    const limited = enforceRate(deps.limiter, "providerTest", user.userId);
+    if (limited) return limited;
+    const adapter = /^[a-z0-9][a-z0-9_-]{1,63}$/.test(providerId) ? deps.catalog.adapter(providerId) : undefined;
+    if (!adapter) return apiError(404, "not_found", "Provider not found.");
+
+    const ciphertext = await deps.keys.getCiphertext(user.userId, providerId);
+    if (!ciphertext) return apiError(404, "key_not_found", "No API key saved for this provider.");
+
+    let secret: string;
+    try {
+      secret = await deps.vault.decrypt(ciphertext, credentialContext(user.userId, providerId));
+    } catch {
+      return apiError(500, "credential_error", "The saved API key could not be decrypted. Re-save it.");
+    }
+
+    try {
+      const result = await adapter.validateCredentials(secret);
+      const validationStatus = result.valid ? "valid" : "invalid";
+      await deps.keys.setValidation(user.userId, providerId, validationStatus);
+      return json(200, { validationStatus, ...(result.message ? { message: result.message } : {}) });
+    } catch (error) {
+      // Provider unreachable / rate limited: the key's status is unknown, so leave it unchanged.
+      if (error instanceof ProviderError) return apiError(502, "provider_unreachable", error.message);
+      throw error;
+    }
   } catch (error) {
     return internalError(error);
   }
@@ -126,6 +250,8 @@ export async function postPresign(request: Request, deps: ApiDeps): Promise<Resp
   try {
     const user = await authenticate(request, deps.verifyToken);
     if (!user) return unauthorized();
+    const limited = enforceRate(deps.limiter, "uploads", user.userId);
+    if (limited) return limited;
     const body = await parseJson(request, presignSchema);
     if (!body.ok) return body.response;
     const input = body.data;
@@ -168,6 +294,8 @@ export async function postConfirmUpload(request: Request, deps: ApiDeps, assetId
   try {
     const user = await authenticate(request, deps.verifyToken);
     if (!user) return unauthorized();
+    const limited = enforceRate(deps.limiter, "uploads", user.userId);
+    if (limited) return limited;
     if (!assetIdSchema.safeParse(assetId).success) return apiError(404, "not_found", "Asset not found.");
 
     const [asset] = await deps.assets.findOwned(user.userId, [assetId]);
@@ -183,6 +311,14 @@ export async function postConfirmUpload(request: Request, deps: ApiDeps, assetId
       await deps.assets.setStatus(asset.id, "rejected");
       await deps.storage.deleteObject({ ownerId: user.userId, key: asset.objectKey });
       return apiError(422, "upload_mismatch", "The uploaded file does not match the declared size or type and was removed.");
+    }
+
+    // Content-Type is client-declared (and signed), so also inspect the real bytes.
+    const start = await deps.storage.readObject({ ownerId: user.userId, key: asset.objectKey, bytes: SNIFF_BYTES });
+    if (sniffMime(start) !== asset.contentType.toLowerCase()) {
+      await deps.assets.setStatus(asset.id, "rejected");
+      await deps.storage.deleteObject({ ownerId: user.userId, key: asset.objectKey });
+      return apiError(422, "upload_content_mismatch", "The file contents do not match the declared type and were removed.");
     }
 
     await deps.assets.setStatus(asset.id, "uploaded");
