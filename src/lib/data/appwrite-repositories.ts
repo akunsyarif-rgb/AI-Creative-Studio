@@ -61,12 +61,17 @@ export function appwriteJobsRepository(): JobsRepository {
     async update(id: string, patch: JobPatch) {
       await databases.updateDocument({ databaseId, collectionId, documentId: id, data: { ...patch } });
     },
-    async listByOwner(ownerId, limit) {
+    async listByOwner(ownerId, limit, cursor) {
+      // Fetch one extra row to know whether another page exists.
       const res = await databases.listDocuments<JobDoc>({
         databaseId, collectionId,
-        queries: [Query.equal("ownerId", ownerId), Query.orderDesc("$createdAt"), Query.limit(limit)]
+        queries: [
+          Query.equal("ownerId", ownerId), Query.orderDesc("$createdAt"), Query.limit(limit + 1),
+          ...(cursor ? [Query.cursorAfter(cursor)] : [])
+        ]
       });
-      return res.documents.map(toJob);
+      const page = res.documents.slice(0, limit).map(toJob);
+      return { jobs: page, nextCursor: res.documents.length > limit ? page[page.length - 1].id : null };
     }
   };
 }

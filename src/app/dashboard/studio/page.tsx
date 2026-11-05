@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import {
-  ACCEPTED_IMAGE_TYPES, ApiError, MAX_IMAGE_BYTES, defaultParams, imageModels, imageProviders, pollJob, uploadAsset,
+  ACCEPTED_IMAGE_TYPES, ApiError, MAX_IMAGE_BYTES, defaultParams, downloadAsset, getAssetUrl, imageModels, imageProviders, pollJob, uploadAsset,
   type JobView, type ProviderView
 } from "@/lib/client/api";
 import { useApi } from "@/lib/client/use-session";
@@ -28,6 +28,7 @@ export default function StudioPage() {
   const [estimate, setEstimate] = useState<Estimate | null>(null);
   const [job, setJob] = useState<JobView | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
+  const [resultAssetId, setResultAssetId] = useState<string | null>(null);
 
   // One idempotency key per logical attempt; reused when the user confirms the cost.
   const attemptKey = useRef<string | null>(null);
@@ -85,6 +86,7 @@ export default function StudioPage() {
     setBusy(true);
     setError(null);
     setResultUrl(null);
+    setResultAssetId(null);
     try {
       let inputAssetId: string | undefined;
       if (file) {
@@ -112,8 +114,8 @@ export default function StudioPage() {
       abort.current = new AbortController();
       const final = await pollJob(api, res.job.id, setJob, { signal: abort.current.signal });
       if (final.status === "completed" && final.outputAssetIds[0]) {
-        const { download } = await api.get<{ download: { url: string } }>(`/api/assets/${final.outputAssetIds[0]}`);
-        setResultUrl(download.url);
+        setResultAssetId(final.outputAssetIds[0]);
+        setResultUrl(await getAssetUrl(api, final.outputAssetIds[0]));
       }
     } catch (e) {
       if (e instanceof ApiError && e.code === "cost_confirmation_required") {
@@ -233,7 +235,10 @@ export default function StudioPage() {
               {/* Short-lived signed URL from our private bucket; next/image optimisation does not apply. */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img className="result-img" src={resultUrl} alt={`Generated image for: ${prompt.trim().slice(0, 120)}`} />
-              <div className="actions"><a className="btn" href={resultUrl} download="image.png">Download</a></div>
+              <div className="actions">
+                <button className="btn" type="button" onClick={() => resultAssetId && void downloadAsset(api, resultAssetId)}>Download</button>
+                <Link className="btn" href="/dashboard/library">Open library</Link>
+              </div>
               <p className="muted small">AI-generated image. The link expires in a few minutes; the file stays in your private library.</p>
             </>
           )}

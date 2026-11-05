@@ -51,6 +51,10 @@ export function createApiClient(getToken: () => Promise<string>, fetchImpl: type
 
 export interface JobView {
   id: string;
+  providerId?: string;
+  modelId?: string;
+  createdAt?: string;
+  prompt?: string | null;
   status: "queued" | "submitted" | "processing" | "validating" | "completed" | "failed" | "cancelled";
   progress: number | null;
   errorCode: string | null;
@@ -132,3 +136,23 @@ export function imageProviders(providers: ProviderView[]): ProviderView[] {
 export function defaultParams(model: ModelView | undefined): Record<string, string> {
   return Object.fromEntries((model?.parameters ?? []).map((p) => [p.key, p.default]));
 }
+
+/** One page of the user's jobs, newest first. Pass `nextCursor` from the previous page to continue. */
+export async function fetchJobsPage(api: ApiClient, cursor?: string | null, limit = 12): Promise<{ jobs: JobView[]; nextCursor: string | null }> {
+  const qs = new URLSearchParams({ limit: String(limit), ...(cursor ? { cursor } : {}) });
+  return api.get(`/api/jobs?${qs}`);
+}
+
+/** Short-lived signed URL for one of the user's assets (inline view, or save-as with `download`). */
+export async function getAssetUrl(api: ApiClient, assetId: string, opts: { download?: boolean } = {}): Promise<string> {
+  const { download } = await api.get<{ download: { url: string } }>(`/api/assets/${assetId}${opts.download ? "?download=1" : ""}`);
+  return download.url;
+}
+
+/** Fetches a fresh attachment URL and hands it to the browser, which saves the file. */
+export async function downloadAsset(api: ApiClient, assetId: string, navigate: (url: string) => void = (u) => window.location.assign(u)): Promise<void> {
+  navigate(await getAssetUrl(api, assetId, { download: true }));
+}
+
+/** Jobs that are still running and worth re-checking. */
+export const isActive = (job: Pick<JobView, "status">) => !TERMINAL.has(job.status);

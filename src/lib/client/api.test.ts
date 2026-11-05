@@ -88,3 +88,39 @@ describe("provider view helpers", () => {
     expect(defaultParams(undefined)).toEqual({});
   });
 });
+
+import { downloadAsset, fetchJobsPage, getAssetUrl, isActive } from "./api";
+
+describe("library helpers", () => {
+  const record = () => {
+    const urls: string[] = [];
+    const api = createApiClient(async () => "t", (async (url: string) => {
+      urls.push(url);
+      return url.startsWith("/api/assets") ? jsonRes({ download: { url: `https://r2.example/${url.includes("download=1") ? "attach" : "inline"}` } }) : jsonRes({ jobs: [], nextCursor: "c2" });
+    }) as unknown as typeof fetch);
+    return { api, urls };
+  };
+
+  it("requests pages with limit and cursor", async () => {
+    const { api, urls } = record();
+    expect((await fetchJobsPage(api)).nextCursor).toBe("c2");
+    await fetchJobsPage(api, "c1", 5);
+    expect(urls).toEqual(["/api/jobs?limit=12", "/api/jobs?limit=5&cursor=c1"]);
+  });
+
+  it("gets inline URLs for previews and attachment URLs for downloads, then navigates to the latter", async () => {
+    const { api, urls } = record();
+    expect(await getAssetUrl(api, "a1")).toBe("https://r2.example/inline");
+    let went = "";
+    await downloadAsset(api, "a1", (u) => { went = u; });
+    expect(went).toBe("https://r2.example/attach");
+    expect(urls).toEqual(["/api/assets/a1", "/api/assets/a1?download=1"]);
+  });
+
+  it("knows which jobs are still running", () => {
+    expect(isActive({ status: "queued" })).toBe(true);
+    expect(isActive({ status: "validating" })).toBe(true);
+    expect(isActive({ status: "completed" })).toBe(false);
+    expect(isActive({ status: "failed" })).toBe(false);
+  });
+});

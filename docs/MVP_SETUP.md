@@ -19,6 +19,12 @@
 - OpenAI prices in `src/lib/providers/openai.ts` are approximate and unverified; `actualCost` is not recorded.
 - No free/local provider is implemented yet, so every generation is paid and requires cost confirmation.
 
+## OpenRouter (unverified)
+The OpenRouter adapter (`google/gemini-2.5-flash-image`, `openai/gpt-5-image-mini`) was written without live
+access to openrouter.ai. Before relying on it, test with a real key: confirm the model ids exist, that image
+output arrives in `choices[0].message.images[].image_url.url`, and that `/auth/key` validates keys. Prices in
+the adapter are placeholders.
+
 ## Adding a provider
 Providers are plugged in through the registry; core execution code never changes.
 1. Copy `src/lib/providers/adapters/_template.ts` to `adapters/<provider>.ts` and implement it
