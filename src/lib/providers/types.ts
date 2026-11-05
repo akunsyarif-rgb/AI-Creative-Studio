@@ -15,13 +15,37 @@ export interface CostEstimate {
   notes?: string;
 }
 
+/** A user-facing option for a model parameter, rendered as a <select> by the UI. */
+export interface ParameterOption {
+  value: string;
+  label: string;
+}
+
+/** Describes one tunable parameter so the UI can build its form from provider config alone. */
+export interface ParameterSpec {
+  key: string;
+  label: string;
+  options: ParameterOption[];
+  default: string;
+}
+
 export interface ProviderModel {
-  providerId: string;
   modelId: string;
   displayName: string;
   capabilities: Capability[];
+  /** Tunable parameters beyond the prompt. */
+  parameters?: ParameterSpec[];
+  /** Left unset until pricing has been verified against the provider's live pricing. */
   pricingVerifiedAt?: string;
   isFreeTier?: boolean;
+}
+
+/** Static, non-secret description of a provider. Safe to send to the browser. */
+export interface ProviderConfig {
+  id: string;
+  name: string;
+  description?: string;
+  availableModels: ProviderModel[];
 }
 
 export interface ProviderJobRequest {
@@ -67,16 +91,16 @@ export class ProviderError extends Error {
 }
 
 export interface ProviderAdapter {
-  readonly providerId: string;
-  readonly displayName: string;
-  models(): ProviderModel[];
-  capabilities(): Promise<Capability[]>;
+  readonly config: ProviderConfig;
+  /** Union of the capabilities of all available models. */
+  getCapabilities(): Capability[];
   /** Rejects unsupported parameters before any submission. Throws ProviderError("invalid_request"). */
   validateRequest(request: ProviderJobRequest): void;
-  validateCredentials(secret: string): Promise<{ valid: boolean; message?: string }>;
+  /** Checks a BYOK against the real provider API. Throws ProviderError if the result is unknown. */
+  testKey(secret: string): Promise<{ valid: boolean; message?: string }>;
   estimateCost(request: ProviderJobRequest): Promise<CostEstimate | null>;
   /** Billable. Callers must never retry this automatically. */
-  submitJob(request: ProviderJobRequest, idempotencyKey: string, context: ProviderExecutionContext): Promise<ProviderJobResult>;
+  executeJob(request: ProviderJobRequest, idempotencyKey: string, context: ProviderExecutionContext): Promise<ProviderJobResult>;
   getJobStatus?(providerJobId: string, secret: string): Promise<ProviderJobResult>;
   cancelJob?(providerJobId: string): Promise<{ accepted: boolean }>;
 }
