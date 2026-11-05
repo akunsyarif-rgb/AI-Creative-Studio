@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 /**
@@ -81,13 +81,25 @@ export interface PresignedDownload {
   expiresAt: string;
 }
 
+export interface ObjectInfo {
+  size: number;
+  contentType: string | null;
+}
+
 export interface ObjectStorage {
+  /** Returns null if the object does not exist. */
+  headObject(input: { ownerId: string; key: string }): Promise<ObjectInfo | null>;
+  deleteObject(input: { ownerId: string; key: string }): Promise<void>;
   presignUpload(input: { ownerId: string; key: string; contentType: string; size: number; ttlSeconds?: number }): Promise<PresignedUpload>;
   presignDownload(input: { ownerId: string; key: string; filename?: string; ttlSeconds?: number }): Promise<PresignedDownload>;
 }
 
-export function createR2Storage(config: R2Config, now: () => number = Date.now): ObjectStorage {
-  const client = new S3Client({
+export function createR2Storage(
+  config: R2Config,
+  now: () => number = Date.now,
+  injectedClient?: Pick<S3Client, "send">
+): ObjectStorage {
+  const client = (injectedClient as S3Client | undefined) ?? new S3Client({
     region: "auto",
     endpoint: config.endpoint,
     credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
@@ -97,6 +109,23 @@ export function createR2Storage(config: R2Config, now: () => number = Date.now):
   });
 
   return {
+    async headObject({ ownerId, key }) {
+      assertOwnedKey(ownerId, key);
+      try {
+        const res = await client.send(new HeadObjectCommand({ Bucket: config.bucket, Key: key }));
+        return { size: res.ContentLength ?? -1, contentType: res.ContentType ?? null };
+      } catch (error) {
+        const e = error as { name?: string; $metadata?: { httpStatusCode?: number } };
+        if (e.name === "NotFound" || e.name === "NoSuchKey" || e.$metadata?.httpStatusCode === 404) return null;
+        throw error;
+      }
+    },
+
+    async deleteObject({ ownerId, key }) {
+      assertOwnedKey(ownerId, key);
+      await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }));
+    },
+
     async presignUpload({ ownerId, key, contentType, size, ttlSeconds }) {
       assertOwnedKey(ownerId, key);
       validateUpload(contentType, size);

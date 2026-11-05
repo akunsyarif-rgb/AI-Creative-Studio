@@ -1,7 +1,8 @@
 import "server-only";
 import { z } from "zod";
 import { verifyAppwriteJwt } from "@/lib/appwrite/server";
-import { appwriteAssetsRepository, appwriteJobsRepository } from "@/lib/data/appwrite-repositories";
+import { appwriteAssetsRepository, appwriteJobsRepository, appwriteKeysRepository } from "@/lib/data/appwrite-repositories";
+import { encryptProviderCredential } from "@/lib/security/secrets";
 import { createR2Storage } from "@/lib/storage/r2";
 import type { ApiDeps, ProviderCatalog } from "./handlers";
 
@@ -26,6 +27,8 @@ export function getApiDeps(): ApiDeps {
     verifyToken: verifyAppwriteJwt,
     jobs: appwriteJobsRepository(),
     assets: appwriteAssetsRepository(),
+    keys: appwriteKeysRepository(),
+    vault: { encrypt: encryptProviderCredential },
     storage: createR2Storage({
       endpoint: env.data.STORAGE_ENDPOINT,
       bucket: env.data.STORAGE_BUCKET,

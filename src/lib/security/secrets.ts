@@ -23,9 +23,7 @@ function keyring(): Keyring {
   return cached.keyring;
 }
 
-export function credentialContext(ownerId: string, providerId: string): string {
-  return `provider-credential:${ownerId}:${providerId}`;
-}
+export { credentialContext } from "./credential-context";
 
 export async function encryptProviderCredential(plaintext: string, context: string): Promise<string> {
   return encryptWithKeyring(keyring(), plaintext, context);
