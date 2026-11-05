@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { authenticate, type TokenVerifier } from "@/lib/auth/session";
-import type { AssetsRepository, JobsRepository, KeysRepository } from "@/lib/data/repositories";
+import type { AssetsRepository, JobRecord, JobsRepository, KeysRepository } from "@/lib/data/repositories";
 import { CAPABILITIES } from "@/lib/providers/types";
 import { SNIFF_BYTES, sniffMime } from "@/lib/storage/sniff";
 import { StorageError, newObjectKey, validateUpload, type ObjectStorage } from "@/lib/storage/r2";
@@ -77,11 +77,12 @@ export function requestHash(input: z.infer<typeof createJobSchema>): string {
   return createHash("sha256").update(canonical(payload)).digest("hex");
 }
 
-function publicJob(job: Awaited<ReturnType<JobsRepository["listByOwner"]>>[number]) {
+function publicJob(job: JobRecord) {
   return {
     id: job.id, projectId: job.projectId, capability: job.capability, providerId: job.providerId, modelId: job.modelId,
     status: job.status, inputAssetIds: job.inputAssetIds, outputAssetIds: job.outputAssetIds, progress: job.progress,
     errorCode: job.errorCode, errorMessage: job.errorMessage,
+    prompt: typeof job.parameters.prompt === "string" ? job.parameters.prompt.slice(0, 300) : null,
     estimatedCost: job.estimatedCost === null ? null : { amount: job.estimatedCost, currency: job.currency, isEstimate: true },
     createdAt: job.createdAt
   };
@@ -183,12 +184,17 @@ export async function getAssetDownload(request: Request, deps: ApiDeps, assetId:
   try {
     const user = await authenticate(request, deps.verifyToken);
     if (!user) return unauthorized();
-    const limited = enforceRate(deps.limiter, "uploads", user.userId);
+    const limited = enforceRate(deps.limiter, "assetRead", user.userId);
     if (limited) return limited;
     if (!id.safeParse(assetId).success) return apiError(404, "not_found", "Asset not found.");
     const [asset] = await deps.assets.findOwned(user.userId, [assetId]);
     if (!asset || asset.status !== "uploaded") return apiError(404, "not_found", "Asset not found.");
-    const download = await deps.storage.presignDownload({ ownerId: user.userId, key: asset.objectKey });
+    // `?download=1` makes the browser save the file instead of displaying it.
+    const asAttachment = new URL(request.url).searchParams.get("download") === "1";
+    const ext = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm" }[asset.contentType] ?? "bin";
+    const download = await deps.storage.presignDownload({
+      ownerId: user.userId, key: asset.objectKey, ...(asAttachment ? { filename: `studio-${asset.id.slice(0, 12)}.${ext}` } : {})
+    });
     return json(200, { asset: { id: asset.id, contentType: asset.contentType, size: asset.size }, download });
   } catch (error) {
     return internalError(error);
@@ -257,9 +263,12 @@ export async function getJobs(request: Request, deps: ApiDeps): Promise<Response
   try {
     const user = await authenticate(request, deps.verifyToken);
     if (!user) return unauthorized();
-    const limit = Math.min(Math.max(Number(new URL(request.url).searchParams.get("limit")) || 25, 1), 100);
-    const jobs = await deps.jobs.listByOwner(user.userId, limit);
-    return json(200, { jobs: jobs.map(publicJob) });
+    const params = new URL(request.url).searchParams;
+    const limit = Math.min(Math.max(Number(params.get("limit")) || 25, 1), 100);
+    const cursor = params.get("cursor") ?? undefined;
+    if (cursor !== undefined && !id.safeParse(cursor).success) return apiError(400, "invalid_cursor", "Invalid cursor.");
+    const { jobs, nextCursor } = await deps.jobs.listByOwner(user.userId, limit, cursor);
+    return json(200, { jobs: jobs.map(publicJob), nextCursor });
   } catch (error) {
     return internalError(error);
   }

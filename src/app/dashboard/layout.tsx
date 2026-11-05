@@ -8,6 +8,7 @@ import { useSessionUser } from "@/lib/client/use-session";
 
 const links = [
   { href: "/dashboard/studio", label: "Studio" },
+  { href: "/dashboard/library", label: "Library" },
   { href: "/dashboard/keys", label: "API keys" }
 ];
 
@@ -35,7 +36,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           <button className="nav-link" type="button" onClick={async () => { await signOut(); router.replace("/login"); }}>Sign out</button>
         </nav>
       </header>
-      <main className="app-main">{children}</main>
+      <main className={pathname.startsWith("/dashboard/library") ? "app-main wide" : "app-main"}>{children}</main>
     </div>
   );
 }

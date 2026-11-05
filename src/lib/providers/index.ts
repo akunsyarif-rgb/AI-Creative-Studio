@@ -1,4 +1,5 @@
 import { createOpenAIAdapter } from "./adapters/openai";
+import { createOpenRouterAdapter } from "./adapters/openrouter";
 import { createProviderRegistry } from "./registry";
 
 /**
@@ -7,8 +8,9 @@ import { createProviderRegistry } from "./registry";
  * API routes and job execution resolve adapters by id and need no changes.
  */
 export const providerRegistry = createProviderRegistry([
-  createOpenAIAdapter()
-  // createOpenRouterAdapter(),   // <- see adapters/_template.ts
+  createOpenAIAdapter(),
+  createOpenRouterAdapter()
+  // createYourAdapter(),   // <- copy adapters/_template.ts
 ]);
 
 export { ProviderRegistry, createProviderRegistry } from "./registry";

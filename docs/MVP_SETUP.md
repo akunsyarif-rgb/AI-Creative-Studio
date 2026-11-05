@@ -19,6 +19,15 @@
 - OpenAI prices in `src/lib/providers/openai.ts` are approximate and unverified; `actualCost` is not recorded.
 - No free/local provider is implemented yet, so every generation is paid and requires cost confirmation.
 
+## OpenRouter (unverified)
+The OpenRouter adapter (`black-forest-labs/flux-schnell`, `stabilityai/stable-diffusion-3`, text-to-image only)
+was written without live access to openrouter.ai. It calls `POST /api/v1/images/generations` with
+`{ model, prompt, n, size, response_format: "b64_json" }`. Before relying on it, test with a real key:
+confirm the model ids exist in OpenRouter's catalog, that this endpoint path and the `size` parameter are
+accepted, that the response is `data[0].b64_json`, and that `/auth/key` validates keys. A wrong id/path/parameter
+fails safely with a 4xx ("The provider rejected the request", nothing billed). Prices in the adapter are
+rough placeholders.
+
 ## Adding a provider
 Providers are plugged in through the registry; core execution code never changes.
 1. Copy `src/lib/providers/adapters/_template.ts` to `adapters/<provider>.ts` and implement it

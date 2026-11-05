@@ -49,8 +49,12 @@ describe("ProviderRegistry", () => {
 });
 
 describe("default registry", () => {
-  it("registers OpenAI with its models and parameters, and not the template", () => {
-    expect(providerRegistry.configs().map((c) => c.id)).toEqual(["openai"]);
+  it("registers OpenAI and OpenRouter with their models and parameters, and not the template", () => {
+    expect(providerRegistry.configs().map((c) => c.id)).toEqual(["openai", "openrouter"]);
+    expect(providerRegistry.get("openrouter")!.config.availableModels.length).toBeGreaterThanOrEqual(2);
+    expect(providerRegistry.supports("openrouter", "black-forest-labs/flux-schnell", "text_to_image")).toBe(true);
+    expect(providerRegistry.supports("openrouter", "stabilityai/stable-diffusion-3", "text_to_image")).toBe(true);
+    expect(providerRegistry.supports("openrouter", "stabilityai/stable-diffusion-3", "image_to_image")).toBe(false);
     const openai = providerRegistry.get("openai")!;
     expect(openai.getCapabilities()).toEqual(["text_to_image", "image_to_image"]);
     const model = providerRegistry.findModel("openai", "gpt-image-1")!;

@@ -114,7 +114,13 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
         jobs.set(record.id, record);
         return { job: record, created: true };
       },
-      async listByOwner(ownerId, limit) { return [...jobs.values()].filter((j) => j.ownerId === ownerId).slice(0, limit); },
+      async listByOwner(ownerId, limit, cursor) {
+        // Newest first, like the real repository.
+        const all = [...jobs.values()].filter((j) => j.ownerId === ownerId).reverse();
+        const start = cursor ? all.findIndex((j) => j.id === cursor) + 1 : 0;
+        const page = all.slice(start, start + limit);
+        return { jobs: page, nextCursor: start + limit < all.length ? page[page.length - 1].id : null };
+      },
       async getOwned(ownerId, id) { const j = jobs.get(id); return j && j.ownerId === ownerId ? j : null; },
       async update(id: string, patch: JobPatch) { Object.assign(jobs.get(id)!, patch); }
     },
@@ -173,7 +179,7 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
       decrypt: async (c, ctx) => decryptWithKeyring(RING, c, ctx)
     },
     providers: createProviderRegistry([adapter]),
-    limiter: createRateLimiter(opts.limits ?? { keys: { limit: 1000, windowSeconds: 60 }, uploads: { limit: 1000, windowSeconds: 60 }, providerTest: { limit: 1000, windowSeconds: 60 }, jobs: { limit: 1000, windowSeconds: 60 } }),
+    limiter: createRateLimiter(opts.limits ?? { keys: { limit: 1000, windowSeconds: 60 }, uploads: { limit: 1000, windowSeconds: 60 }, providerTest: { limit: 1000, windowSeconds: 60 }, jobs: { limit: 1000, windowSeconds: 60 }, assetRead: { limit: 1000, windowSeconds: 60 } }),
     scheduler: { run: (t) => { tasks.push(t); } },
     maxJobCostUsd: opts.maxJobCostUsd ?? 1,
     ...opts.deps

@@ -19,7 +19,9 @@ export const RATE_RULES = {
   keys: { limit: 20, windowSeconds: 60 },
   uploads: { limit: 30, windowSeconds: 60 },
   providerTest: { limit: 5, windowSeconds: 60 },
-  jobs: { limit: 20, windowSeconds: 60 }
+  jobs: { limit: 20, windowSeconds: 60 },
+  /** Signed-URL issuance for reading assets (gallery thumbnails). */
+  assetRead: { limit: 120, windowSeconds: 60 }
 } satisfies Record<string, RateLimitRule>;
 
 export type RateBucket = keyof typeof RATE_RULES;

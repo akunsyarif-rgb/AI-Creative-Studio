@@ -37,7 +37,8 @@ export interface JobPatch {
 export interface JobsRepository {
   /** Atomic: the same (owner, idempotencyKey) can only ever create one job. */
   createIdempotent(job: NewJob): Promise<{ job: JobRecord; created: boolean }>;
-  listByOwner(ownerId: string, limit: number): Promise<JobRecord[]>;
+  /** Newest first. `cursor` is the id of the last job of the previous page. */
+  listByOwner(ownerId: string, limit: number, cursor?: string): Promise<{ jobs: JobRecord[]; nextCursor: string | null }>;
   getOwned(ownerId: string, id: string): Promise<JobRecord | null>;
   /** Server-side only. Callers must validate the transition with `canTransitionJob`. */
   update(id: string, patch: JobPatch): Promise<void>;
