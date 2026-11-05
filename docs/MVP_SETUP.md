@@ -1,5 +1,7 @@
 # MVP setup (manual steps; nothing here is provisioned automatically)
 
+0. **Without a terminal (e.g. iPad)**: add repository secrets `APPWRITE_ENDPOINT`, `APPWRITE_PROJECT_ID`, `APPWRITE_API_KEY`,
+   `APPWRITE_DATABASE_ID` (GitHub → Settings → Secrets and variables → Actions), then run **Actions → Appwrite setup → Run workflow**.
 1. **Appwrite**: create a project, enable Email/Password auth, add your app's hostname as a *Web platform*
    (needed for browser sessions). Create a server API key with databases/collections/attributes/indexes
    write scopes. Then run `npm run appwrite:setup` (idempotent; re-run after schema changes such as
