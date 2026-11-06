@@ -16,6 +16,8 @@ export interface JobRecord {
   errorCode: string | null;
   errorMessage: string | null;
   outputAssetIds: string[];
+  /** The provider's own task id, once a long-running task was accepted (lets us resume after the request ends). */
+  providerJobId: string | null;
   estimatedCost: number | null;
   currency: string | null;
   createdAt: string;
@@ -32,6 +34,7 @@ export interface JobPatch {
   errorCode?: string;
   errorMessage?: string;
   outputAssetIds?: string[];
+  providerJobId?: string;
 }
 
 export interface JobsRepository {

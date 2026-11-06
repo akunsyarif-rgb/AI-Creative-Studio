@@ -124,14 +124,21 @@ export interface ModelView {
   parameters: { key: string; label: string; default: string; options: { value: string; label: string }[] }[];
 }
 
-const IMAGE_CAPABILITIES = ["text_to_image", "image_to_image"];
+export type StudioCapability = "text_to_image" | "image_to_image" | "text_to_video" | "image_to_video";
+const IMAGE_CAPABILITIES = ["text_to_image", "image_to_image", "text_to_video", "image_to_video"];
 
-/** Models that can serve the Image Studio for the requested capability. */
-export function imageModels(provider: ProviderView | undefined, capability: "text_to_image" | "image_to_image"): ModelView[] {
+/** Which capability the Studio asks for: the mode (image/video) plus whether a start/reference image is attached. */
+export function studioCapability(mode: "image" | "video", hasImage: boolean): StudioCapability {
+  if (mode === "video") return hasImage ? "image_to_video" : "text_to_video";
+  return hasImage ? "image_to_image" : "text_to_image";
+}
+
+/** Models that can serve the Studio for the requested capability (image or video). */
+export function imageModels(provider: ProviderView | undefined, capability: StudioCapability): ModelView[] {
   return (provider?.models ?? []).filter((m) => m.capabilities.includes(capability) && IMAGE_CAPABILITIES.includes(capability));
 }
 
-/** Providers that offer at least one image model. */
+/** Providers that offer at least one image or video model. */
 export function imageProviders(providers: ProviderView[]): ProviderView[] {
   return providers.filter((p) => p.models.some((m) => m.capabilities.some((c) => IMAGE_CAPABILITIES.includes(c))));
 }
@@ -150,6 +157,12 @@ export async function fetchJobsPage(api: ApiClient, cursor?: string | null, limi
 export async function getAssetUrl(api: ApiClient, assetId: string, opts: { download?: boolean } = {}): Promise<string> {
   const { download } = await api.get<{ download: { url: string } }>(`/api/assets/${assetId}${opts.download ? "?download=1" : ""}`);
   return download.url;
+}
+
+/** Signed URL plus the file type, so callers can choose between an image and a video player. */
+export async function getAsset(api: ApiClient, assetId: string): Promise<{ url: string; contentType: string }> {
+  const r = await api.get<{ asset: { contentType: string }; download: { url: string } }>(`/api/assets/${assetId}`);
+  return { url: r.download.url, contentType: r.asset.contentType };
 }
 
 /** Fetches a fresh attachment URL and hands it to the browser, which saves the file. */

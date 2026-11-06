@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import {
-  ACCEPTED_IMAGE_TYPES, ApiError, MAX_IMAGE_BYTES, defaultParams, downloadAsset, getAssetUrl, imageModels, imageProviders, pollJob, uploadAsset,
+  ACCEPTED_IMAGE_TYPES, ApiError, MAX_IMAGE_BYTES, defaultParams, downloadAsset, getAsset, imageModels, imageProviders, pollJob, studioCapability, uploadAsset,
   type JobView, type ProviderView
 } from "@/lib/client/api";
 import { COMPRESS_TARGET_BYTES, compressImage } from "@/lib/client/compress";
@@ -13,7 +13,7 @@ import { useApi } from "@/lib/client/use-session";
 interface Estimate { amount: number | null; currency: string; notes?: string }
 
 const STATUS_TEXT: Record<JobView["status"], string> = {
-  queued: "Queued…", submitted: "Sent to the provider…", processing: "Generating…",
+  queued: "Queued…", submitted: "Sent to the provider…", processing: "Generating… (a video takes a few minutes; you can leave this page, the result will appear in your library)",
   validating: "Checking and saving the result…", completed: "Done", failed: "Failed", cancelled: "Cancelled"
 };
 
@@ -30,7 +30,9 @@ export default function StudioPage() {
   const [error, setError] = useState<{ text: string; needsKey?: boolean } | null>(null);
   const [estimate, setEstimate] = useState<Estimate | null>(null);
   const [job, setJob] = useState<JobView | null>(null);
+  const [mode, setMode] = useState<"image" | "video">("image");
   const [resultUrl, setResultUrl] = useState<string | null>(null);
+  const [resultIsVideo, setResultIsVideo] = useState(false);
   const [resultAssetId, setResultAssetId] = useState<string | null>(null);
 
   // One idempotency key per logical attempt; reused when the user confirms the cost.
@@ -55,7 +57,7 @@ export default function StudioPage() {
     };
   }, [api]);
 
-  const capability = file ? "image_to_image" : "text_to_image";
+  const capability = studioCapability(mode, !!file);
   const provider = providers?.find((p) => p.id === providerChoice) ?? providers?.[0];
   const models = imageModels(provider, capability);
   const model = models.find((m) => m.modelId === modelChoice) ?? models[0];
@@ -102,6 +104,7 @@ export default function StudioPage() {
     setBusy(true);
     setError(null);
     setResultUrl(null);
+    setResultIsVideo(false);
     setResultAssetId(null);
     try {
       let inputAssetId: string | undefined;
@@ -129,10 +132,15 @@ export default function StudioPage() {
 
       abort.current?.abort();
       abort.current = new AbortController();
-      const final = await pollJob(api, res.job.id, setJob, { signal: abort.current.signal });
+      const final = await pollJob(api, res.job.id, setJob, {
+        signal: abort.current.signal,
+        ...(mode === "video" ? { intervalMs: 6000, timeoutMs: 20 * 60_000 } : {})
+      });
       if (final.status === "completed" && final.outputAssetIds[0]) {
         setResultAssetId(final.outputAssetIds[0]);
-        setResultUrl(await getAssetUrl(api, final.outputAssetIds[0]));
+        const asset = await getAsset(api, final.outputAssetIds[0]);
+        setResultIsVideo(asset.contentType.startsWith("video/"));
+        setResultUrl(asset.url);
       }
     } catch (e) {
       if (e instanceof ApiError && e.code === "cost_confirmation_required") {
@@ -165,6 +173,15 @@ export default function StudioPage() {
       <p className="muted lead">Describe what you want. Add a reference image to edit it instead. Results are saved privately to your library.</p>
 
       <form className="panel stack" onSubmit={onSubmit}>
+        <div className="field" role="group" aria-label="What to create">
+          <span>Create</span>
+          <div className="actions">
+            <button type="button" className={`btn ${mode === "image" ? "btn-primary" : ""}`} aria-pressed={mode === "image"}
+              onClick={() => { setMode("image"); setModelChoice(""); setOverrides({}); changed(); }}>Image</button>
+            <button type="button" className={`btn ${mode === "video" ? "btn-primary" : ""}`} aria-pressed={mode === "video"}
+              onClick={() => { setMode("video"); setModelChoice(""); setOverrides({}); changed(); }}>Video</button>
+          </div>
+        </div>
         <label className="field">
           <span>Prompt</span>
           <textarea required maxLength={4000} rows={5} value={prompt} onChange={(e) => { setPrompt(e.target.value); changed(); }} placeholder="A watercolor fox reading a map under a lantern…" />
@@ -193,8 +210,8 @@ export default function StudioPage() {
         </div>
         {providers && !models.length && (
           <p className="notice notice-warn" role="status">
-            {provider ? `${provider.name} has no model for ${file ? "editing an image" : "text-to-image"}.` : "No image providers are available."}
-            {file ? " Remove the reference image or pick another provider." : ""}
+            {provider ? `${provider.name} has no model for ${mode === "video" ? (file ? "image-to-video" : "text-to-video") : file ? "editing an image" : "text-to-image"}.` : "No providers are available."}
+            {file ? " Remove the image or pick another provider." : mode === "video" ? " Add a model ending in /text-to-video or /image-to-video on the API keys page." : ""}
           </p>
         )}
         {model && model.parameters.length > 0 && (
@@ -210,7 +227,7 @@ export default function StudioPage() {
           </div>
         )}
         <label className="field">
-          <span>Reference image (optional)</span>
+          <span>{mode === "video" ? "Start image (optional)" : "Reference image (optional)"}</span>
           <input type="file" accept={ACCEPTED_IMAGE_TYPES.join(",")} onChange={onFile} />
           {compressing && <small className="muted" role="status">Shrinking the photo to under 2 MB…</small>}
           {file && !compressing && <small className="muted">{file.name} · {(file.size / 1024).toFixed(0)} KB. Only use images you own or have permission to edit.</small>}
@@ -249,7 +266,7 @@ export default function StudioPage() {
           </div>
         ) : (
           <button className="btn btn-primary" type="submit" disabled={busy || !prompt.trim() || !model}>
-            {busy ? "Working…" : file ? "Edit image" : "Generate image"}
+            {busy ? "Working…" : mode === "video" ? "Create video" : file ? "Edit image" : "Generate image"}
           </button>
         )}
       </form>
@@ -263,14 +280,20 @@ export default function StudioPage() {
           {job.status === "failed" && <p className="notice notice-error" role="alert">{job.errorMessage ?? "The job failed."}</p>}
           {resultUrl && (
             <>
-              {/* Short-lived signed URL from our private bucket; next/image optimisation does not apply. */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img className="result-img" src={resultUrl} alt={`Generated image for: ${prompt.trim().slice(0, 120)}`} />
+              {resultIsVideo ? (
+                <video className="result-img" src={resultUrl} controls playsInline preload="metadata" aria-label={`Generated video for: ${prompt.trim().slice(0, 120)}`} />
+              ) : (
+                <>
+                  {/* Short-lived signed URL from our private bucket; next/image optimisation does not apply. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img className="result-img" src={resultUrl} alt={`Generated image for: ${prompt.trim().slice(0, 120)}`} />
+                </>
+              )}
               <div className="actions">
                 <button className="btn" type="button" onClick={() => resultAssetId && void downloadAsset(api, resultAssetId)}>Download</button>
                 <Link className="btn" href="/dashboard/library">Open library</Link>
               </div>
-              <p className="muted small">AI-generated image. The link expires in a few minutes; the file stays in your private library.</p>
+              <p className="muted small">AI-generated {resultIsVideo ? "video" : "image"}. The link expires in a few minutes; the file stays in your private library.</p>
             </>
           )}
         </section>

@@ -66,15 +66,26 @@ describe("pollJob", () => {
   });
 });
 
-import { defaultParams, imageModels, imageProviders, parseModelList, type ProviderView } from "./api";
+import { defaultParams, imageModels, imageProviders, parseModelList, studioCapability, type ProviderView } from "./api";
 
 describe("provider view helpers", () => {
   const m = (modelId: string, capabilities: string[], parameters: ProviderView["models"][0]["parameters"] = []) => ({ modelId, displayName: modelId, capabilities, isFreeTier: false, parameters });
   const a: ProviderView = { id: "a", name: "A", description: null, models: [m("a1", ["text_to_image", "image_to_image"], [{ key: "size", label: "Size", default: "s", options: [] }]), m("a2", ["text_to_image"])] };
-  const b: ProviderView = { id: "b", name: "B", description: null, models: [m("b1", ["text_to_video"])] };
+  const b: ProviderView = { id: "b", name: "B", description: null, models: [m("b1", ["background_remove"])] };
+  const v: ProviderView = { id: "v", name: "V", description: null, models: [m("v1", ["text_to_video"]), m("v2", ["image_to_video"])] };
 
-  it("keeps only providers with image models", () => {
-    expect(imageProviders([a, b]).map((p) => p.id)).toEqual(["a"]);
+  it("keeps only providers with image or video models", () => {
+    expect(imageProviders([a, b, v]).map((p) => p.id)).toEqual(["a", "v"]);
+  });
+
+  it("picks the capability from the mode and whether an image is attached, and filters video models by it", () => {
+    expect(studioCapability("image", false)).toBe("text_to_image");
+    expect(studioCapability("image", true)).toBe("image_to_image");
+    expect(studioCapability("video", false)).toBe("text_to_video");
+    expect(studioCapability("video", true)).toBe("image_to_video");
+    expect(imageModels(v, "text_to_video").map((x) => x.modelId)).toEqual(["v1"]);
+    expect(imageModels(v, "image_to_video").map((x) => x.modelId)).toEqual(["v2"]);
+    expect(imageModels(v, "text_to_image")).toEqual([]);
   });
 
   it("filters models by the capability the request needs", () => {

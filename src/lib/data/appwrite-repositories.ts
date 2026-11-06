@@ -19,6 +19,7 @@ type JobRow = Models.Row & {
   ownerId: string; projectId: string; capability: JobRecord["capability"]; providerId: string; modelId: string;
   status: JobRecord["status"]; inputAssetIds?: string[]; parameters: string; idempotencyKey: string; requestHash: string;
   progress?: number | null; errorCode?: string | null; errorMessage?: string | null; outputAssetIds?: string[]; estimatedCost?: number | null; currency?: string | null;
+  providerJobId?: string | null;
 };
 
 function toJob(d: JobRow): JobRecord {
@@ -27,7 +28,7 @@ function toJob(d: JobRow): JobRecord {
     modelId: d.modelId, status: d.status, inputAssetIds: d.inputAssetIds ?? [], parameters: JSON.parse(d.parameters),
     idempotencyKey: d.idempotencyKey, requestHash: d.requestHash, progress: d.progress ?? null,
     errorCode: d.errorCode ?? null, errorMessage: d.errorMessage ?? null,
-    outputAssetIds: d.outputAssetIds ?? [], estimatedCost: d.estimatedCost ?? null, currency: d.currency ?? null,
+    outputAssetIds: d.outputAssetIds ?? [], providerJobId: d.providerJobId ?? null, estimatedCost: d.estimatedCost ?? null, currency: d.currency ?? null,
     createdAt: d.$createdAt
   };
 }
