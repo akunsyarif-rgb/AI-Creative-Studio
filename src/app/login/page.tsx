@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
-import { authConfigured, authErrorMessage, signIn, signUp } from "@/lib/client/auth";
+import { useEffect, useState, type FormEvent } from "react";
+import { authConfigured, authErrorMessage, currentUser, signIn, signUp } from "@/lib/client/auth";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -12,6 +12,17 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Already signed in on this browser: go straight to the studio instead of showing a form that cannot create a second session.
+  useEffect(() => {
+    let live = true;
+    currentUser().then((u) => {
+      if (live && u) router.replace("/dashboard/studio");
+    });
+    return () => {
+      live = false;
+    };
+  }, [router]);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();

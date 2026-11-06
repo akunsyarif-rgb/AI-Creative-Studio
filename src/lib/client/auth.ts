@@ -29,6 +29,9 @@ export async function currentUser(): Promise<SessionUser | null> {
 }
 
 export async function signIn(email: string, password: string): Promise<void> {
+  // Appwrite refuses to create a session while another one is active (e.g. after switching accounts),
+  // so clear any existing session first. Failing to delete (no session) is fine.
+  await signOut();
   await acct().createEmailPasswordSession({ email, password });
 }
 
@@ -80,6 +83,9 @@ export function authErrorMessage(error: unknown, mode: "signin" | "signup"): str
   if (code === 429) return "Too many attempts. Wait a minute and try again.";
   if (type === "general_unknown_origin" || (code === 403 && type?.includes("origin"))) {
     return "This site's address is not registered in Appwrite. Add it under Apps → Web (hostname only, no https://).";
+  }
+  if (type === "user_session_already_exists") {
+    return "Another account is still signed in on this browser. Sign out first, then try again.";
   }
   if (code === 501 || type === "user_auth_method_unsupported") {
     return "Email/password sign-in is turned off in Appwrite. Enable it under Auth → Settings.";
