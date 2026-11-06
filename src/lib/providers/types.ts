@@ -9,7 +9,8 @@ export type Capability = (typeof CAPABILITIES)[number];
 export type JobStatus = "queued" | "submitted" | "processing" | "validating" | "completed" | "failed" | "cancelled";
 
 export interface CostEstimate {
-  amount: number;
+  /** `null` means the price is unknown (e.g. a custom provider without a user estimate). */
+  amount: number | null;
   currency: string;
   isEstimate: true;
   notes?: string;

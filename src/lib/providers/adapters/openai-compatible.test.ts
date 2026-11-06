@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createOpenAICompatibleAdapter } from "./openai-compatible";
 import { ProviderError } from "../types";
 import type { Lookup } from "@/lib/net/public-url";
+import type { CustomProviderConfig } from "@/lib/data/repositories";
 import { PNG } from "@/lib/api/test-helpers";
 
 const cfg = { providerId: "custom-acme", label: "Acme AI", baseUrl: "https://api.acme.example/v1", models: ["acme/draw-1", "acme/draw-2"], estimatedCostUsd: 0.05 };
@@ -15,7 +16,7 @@ function fakeFetch(respond: (c: Call) => Response | Promise<Response>) {
 }
 const b64 = Buffer.from(PNG).toString("base64");
 const ok = () => Response.json({ data: [{ b64_json: b64 }] });
-const make = (f: typeof fetch, lookup: Lookup = publicDns, c = cfg) => createOpenAICompatibleAdapter(c, { fetch: f, lookup });
+const make = (f: typeof fetch, lookup: Lookup = publicDns, c: CustomProviderConfig = cfg) => createOpenAICompatibleAdapter(c, { fetch: f, lookup });
 const req = (over: Record<string, unknown> = {}, modelId = "acme/draw-1") => ({ capability: "text_to_image" as const, modelId, inputAssetIds: [] as string[], parameters: { prompt: "a cat", ...over } });
 const ctx = { secret: "sk-SECRET", inputFiles: [] };
 
@@ -46,6 +47,23 @@ describe("OpenAI-compatible adapter config", () => {
     expect(() => a.validateRequest(req({ prompt: "" }))).toThrow(ProviderError);
     expect(() => a.validateRequest({ ...req(), inputAssetIds: ["x"] })).toThrow(/input images/);
     expect(() => a.validateRequest({ ...req(), capability: "image_to_image" })).toThrow(/Unsupported/);
+  });
+});
+
+describe("OpenAI-compatible adapter without a price estimate", () => {
+  const unknown = { ...cfg, estimatedCostUsd: null };
+
+  it("reports an unknown (null) amount rather than a made-up or zero price, and says so in the description", async () => {
+    const a = make(fakeFetch(ok).fn, publicDns, unknown);
+    const est = await a.estimateCost(req());
+    expect(est).toMatchObject({ amount: null, currency: "USD", isEstimate: true });
+    expect(est!.notes).toMatch(/unknown/i);
+    expect(a.config.description).toMatch(/price unknown/);
+  });
+
+  it("still generates normally", async () => {
+    const res = await make(fakeFetch(ok).fn, publicDns, unknown).executeJob(req(), "i", ctx);
+    expect(res.outputFiles![0].data).toEqual(PNG);
   });
 });
 

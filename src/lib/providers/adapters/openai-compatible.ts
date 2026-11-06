@@ -70,7 +70,7 @@ export function customProviderConfig(cfg: CustomProviderConfig): ProviderConfig 
   return {
     id: cfg.providerId,
     name: cfg.label,
-    description: `Custom OpenAI-compatible endpoint (${host}). Billed by that provider; costs shown are your own estimate.`,
+    description: `Custom OpenAI-compatible endpoint (${host}). Billed by that provider${cfg.estimatedCostUsd === null ? "; price unknown, you confirm each request" : "; costs shown are your own estimate"}.`,
     availableModels: cfg.models.map((modelId) => ({
       modelId, displayName: modelId, capabilities: ["text_to_image" as const], isFreeTier: false, parameters: [SIZE_PARAM]
     }))
@@ -157,8 +157,11 @@ export function createOpenAICompatibleAdapter(cfg: CustomProviderConfig, deps: C
     },
 
     async estimateCost(): Promise<CostEstimate | null> {
-      // Never null: an unknown price must still go through the confirmation gate and the spend ceiling.
-      return { amount: cfg.estimatedCostUsd, currency: "USD", isEstimate: true, notes: "Your own estimate for this provider; actual billing may differ." };
+      // Never a null *estimate*: an unknown price must still go through the confirmation gate. With no user
+      // estimate the amount is null, which the API turns into an explicit "price unknown" consent step.
+      return cfg.estimatedCostUsd === null
+        ? { amount: null, currency: "USD", isEstimate: true, notes: "The price is unknown. The provider will charge its own price to your account." }
+        : { amount: cfg.estimatedCostUsd, currency: "USD", isEstimate: true, notes: "Your own estimate for this provider; actual billing may differ." };
     },
 
     async executeJob(request: ProviderJobRequest, _idempotencyKey: string, context: ProviderExecutionContext): Promise<ProviderJobResult> {

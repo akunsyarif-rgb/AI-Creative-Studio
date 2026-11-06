@@ -149,3 +149,67 @@ describe("custom providers in the provider list, key test and jobs", () => {
     expect(list.map((p: { id: string }) => p.id)).toEqual(["fake"]);
   });
 });
+
+describe("custom providers without a price estimate", () => {
+  const noPrice = { label: "Acme AI", baseUrl: "https://api.acme.example/v1", models: ["acme/draw-1"] };
+  const seedUnknown = async (over: Record<string, unknown> = {}) => {
+    const w = createTestWorld(over);
+    expect((await add(w, { apiKey: SECRET, custom: noPrice })).status).toBe(201);
+    return w;
+  };
+
+  it("saves the provider with a null estimate", async () => {
+    const w = await seedUnknown();
+    expect(w.keys.get("alice/custom-acme-ai")!.custom).toMatchObject({ estimatedCostUsd: null });
+    const list = (await (await getProviders(jsonRequest("/api/providers", { token: ALICE, method: "GET" }), w.deps)).json()).providers;
+    expect(list[1].description).toMatch(/price unknown/);
+  });
+
+  it("still validates a price when one is given", async () => {
+    const w = createTestWorld();
+    expect((await add(w, { apiKey: SECRET, custom: { ...noPrice, estimatedCostUsd: 0 } })).status).toBe(422);
+    expect((await add(w, { apiKey: SECRET, custom: { ...noPrice, estimatedCostUsd: -1 } })).status).toBe(422);
+    expect(w.keys.size).toBe(0);
+  });
+
+  it("asks for explicit 'price unknown' consent and persists nothing until it is given", async () => {
+    const w = await seedUnknown();
+    const first = await job(w);
+    expect(first.status).toBe(409);
+    const body = await first.json();
+    expect(body.error.code).toBe("cost_confirmation_required");
+    expect(body.error.details.estimate.amount).toBeNull();
+    expect(w.jobs.size).toBe(0);
+    expect(w.tasks).toHaveLength(0);
+  });
+
+  it("is not satisfied by a dollar confirmation, only by explicit unknown-price consent", async () => {
+    const w = await seedUnknown();
+    expect((await job(w, { confirmedMaxCostUsd: 1000 })).status).toBe(409);
+    expect((await job(w, { confirmUnknownCost: false })).status).toBe(409);
+    expect(w.jobs.size).toBe(0);
+  });
+
+  it("creates and runs the job once consent is given; no cost is recorded because none is known", async () => {
+    const w = await seedUnknown();
+    w.customFetch.impl = (async () => Response.json({ data: [{ b64_json: Buffer.from(PNG).toString("base64") }] })) as unknown as typeof fetch;
+    const res = await job(w, { confirmUnknownCost: true });
+    expect(res.status).toBe(202);
+    expect((await res.json()).job.estimatedCost).toBeNull();
+    await w.runTasks();
+    expect([...w.jobs.values()][0]).toMatchObject({ status: "completed", estimatedCost: null });
+  });
+
+  it("consent must be given again for the next request (nothing is remembered)", async () => {
+    const w = await seedUnknown();
+    expect((await job(w, { confirmUnknownCost: true })).status).toBe(202);
+    expect((await job(w, { idempotencyKey: "idem-key-0002" })).status).toBe(409);
+  });
+
+  it("does not let unknown-price consent bypass the cost gate of a provider that has a price", async () => {
+    const w = createTestWorld({ maxJobCostUsd: 1 });
+    await add(w, { apiKey: SECRET, custom: { ...noPrice, estimatedCostUsd: 0.05 } });
+    expect((await job(w, { confirmUnknownCost: true })).status).toBe(409); // a dollar confirmation is still required
+    expect((await job(w, { confirmUnknownCost: true, confirmedMaxCostUsd: 0.05 })).status).toBe(202);
+  });
+});

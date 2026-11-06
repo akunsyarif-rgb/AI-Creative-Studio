@@ -8,7 +8,8 @@ import {
 } from "@/lib/client/api";
 import { useApi } from "@/lib/client/use-session";
 
-interface Estimate { amount: number; currency: string; notes?: string }
+/** amount: null means the provider price is unknown (custom provider without an estimate). */
+interface Estimate { amount: number | null; currency: string; notes?: string }
 
 const STATUS_TEXT: Record<JobView["status"], string> = {
   queued: "Queued…", submitted: "Sent to the provider…", processing: "Generating…",
@@ -81,7 +82,7 @@ export default function StudioPage() {
     changed();
   }
 
-  async function submit(confirmedMaxCostUsd?: number) {
+  async function submit(confirmation?: { maxCostUsd?: number; unknownCost?: boolean }) {
     if (!provider || !model) return;
     setBusy(true);
     setError(null);
@@ -104,7 +105,8 @@ export default function StudioPage() {
         inputAssetIds: inputAssetId ? [inputAssetId] : [],
         parameters: { prompt: prompt.trim(), ...params },
         idempotencyKey: attemptKey.current,
-        ...(confirmedMaxCostUsd === undefined ? {} : { confirmedMaxCostUsd })
+        ...(confirmation?.maxCostUsd === undefined ? {} : { confirmedMaxCostUsd: confirmation.maxCostUsd }),
+        ...(confirmation?.unknownCost ? { confirmUnknownCost: true } : {})
       });
       setEstimate(null);
       attemptKey.current = null; // next click is a new job
@@ -206,12 +208,25 @@ export default function StudioPage() {
 
         {estimate ? (
           <div className="notice notice-warn" role="alert">
-            <strong>This is a paid request.</strong>
-            <p>Estimated cost: about <b>${estimate.amount.toFixed(3)} {estimate.currency}</b>. {estimate.notes}</p>
-            <p className="small">Billed by {provider?.name ?? "the provider"} to your own account. Nothing has been sent yet.</p>
+            {estimate.amount === null ? (
+              <>
+                <strong>The price of this request is unknown.</strong>
+                <p>{provider?.name ?? "The provider"} will charge its own price to your account. {estimate.notes}</p>
+                <p className="small">Check their pricing first. The spend limit cannot be applied to an unknown price. Nothing has been sent yet.</p>
+              </>
+            ) : (
+              <>
+                <strong>This is a paid request.</strong>
+                <p>Estimated cost: about <b>${estimate.amount.toFixed(3)} {estimate.currency}</b>. {estimate.notes}</p>
+                <p className="small">Billed by {provider?.name ?? "the provider"} to your own account. Nothing has been sent yet.</p>
+              </>
+            )}
             <div className="actions">
-              <button className="btn btn-primary" type="button" disabled={busy} onClick={() => void submit(estimate.amount)}>
-                {busy ? "Working…" : `Confirm and generate (~$${estimate.amount.toFixed(3)})`}
+              <button
+                className="btn btn-primary" type="button" disabled={busy}
+                onClick={() => void submit(estimate.amount === null ? { unknownCost: true } : { maxCostUsd: estimate.amount })}
+              >
+                {busy ? "Working…" : estimate.amount === null ? "Confirm and generate (price unknown)" : `Confirm and generate (~$${estimate.amount.toFixed(3)})`}
               </button>
               <button className="btn" type="button" disabled={busy} onClick={() => setEstimate(null)}>Cancel</button>
             </div>
