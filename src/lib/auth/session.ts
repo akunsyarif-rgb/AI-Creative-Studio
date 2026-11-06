@@ -1,6 +1,8 @@
 /** Authenticated caller. `userId` is the Appwrite user id and the data owner key. */
 export interface AuthUser {
   userId: string;
+  /** Lower-cased account email, when the identity provider supplies one. */
+  email?: string;
 }
 
 /** Verifies a bearer token and returns the user, or null if invalid. Never throws on bad tokens. */

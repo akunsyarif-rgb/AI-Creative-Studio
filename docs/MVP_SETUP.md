@@ -21,6 +21,16 @@
 - OpenAI prices in `src/lib/providers/openai.ts` are approximate and unverified; `actualCost` is not recorded.
 - No free/local provider is implemented yet, so every generation is paid and requires cost confirmation.
 
+## Sharing an Appwrite project with another app
+Appwrite's user pool and API-key scopes are per *project*, not per database. If this app shares a project with another app:
+- Set `ALLOWED_USER_EMAILS` (and/or `ALLOWED_USER_IDS`) in Vercel. Only listed accounts can use this app's API; everyone else
+  gets 401 "Authentication required" even with a valid Appwrite sign-in. With neither set, **everyone is denied**.
+- Create the account in this app first, then set the allowlist and redeploy. (Appwrite emails are unique, so nobody else can take
+  your address once you have registered.) For a stricter rule use your Appwrite user id from Console → Auth → Users.
+- Use a dedicated API key for this app and do not change project-wide Auth settings the other app relies on.
+- This app only touches the database named by `APPWRITE_DATABASE_ID` (use a name that cannot clash, e.g. `studio`), but an API key
+  with document scopes can technically reach every database in the project, so treat it as sensitive.
+
 ## Checking the deployment
 Open `https://<your-domain>/api/health`. `"ok": true` means every required variable is present and well-formed.
 Otherwise `missing` lists the variable *names* to fix and `warnings` lists likely mistakes (for example mismatched

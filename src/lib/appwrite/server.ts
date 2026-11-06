@@ -29,7 +29,7 @@ export const verifyAppwriteJwt: TokenVerifier = async (token): Promise<AuthUser 
   try {
     const client = new Client().setEndpoint(c.APPWRITE_ENDPOINT).setProject(c.APPWRITE_PROJECT_ID).setJWT(token);
     const user = await new Account(client).get();
-    return user.status ? { userId: user.$id } : null;
+    return user.status ? { userId: user.$id, email: user.email?.toLowerCase() } : null;
   } catch {
     return null;
   }

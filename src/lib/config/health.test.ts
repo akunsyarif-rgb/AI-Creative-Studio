@@ -13,20 +13,21 @@ const good = () => ({
   STORAGE_BUCKET: "studio",
   STORAGE_ACCESS_KEY_ID: "AKIAEXAMPLE",
   STORAGE_SECRET_ACCESS_KEY: "secret-value",
-  CREDENTIAL_ENCRYPTION_KEYS: `k1:${randomBytes(32).toString("base64")}`
+  CREDENTIAL_ENCRYPTION_KEYS: `k1:${randomBytes(32).toString("base64")}`,
+  ALLOWED_USER_EMAILS: "me@example.com"
 });
 
 describe("checkConfig", () => {
   it("is ok for a complete, consistent configuration", () => {
     const r = checkConfig(good());
-    expect(r).toEqual({ ok: true, checks: { appwrite: true, browserAuth: true, storage: true, encryption: true }, missing: [], warnings: [] });
+    expect(r).toEqual({ ok: true, checks: { appwrite: true, browserAuth: true, storage: true, encryption: true, access: true }, missing: [], warnings: [] });
   });
 
   it("reports every missing group by variable name", () => {
     const r = checkConfig({});
     expect(r.ok).toBe(false);
-    expect(Object.values(r.checks)).toEqual([false, false, false, false]);
-    expect(r.missing).toEqual(expect.arrayContaining(["APPWRITE_API_KEY", "NEXT_PUBLIC_APPWRITE_PROJECT_ID", "STORAGE_BUCKET", "CREDENTIAL_ENCRYPTION_KEYS"]));
+    expect(Object.values(r.checks)).toEqual([false, false, false, false, false]);
+    expect(r.missing).toEqual(expect.arrayContaining(["APPWRITE_API_KEY", "NEXT_PUBLIC_APPWRITE_PROJECT_ID", "STORAGE_BUCKET", "CREDENTIAL_ENCRYPTION_KEYS", "ALLOWED_USER_EMAILS (or ALLOWED_USER_IDS)"]));
   });
 
   it("flags a malformed encryption key (wrong length) and a non-https storage endpoint", () => {
@@ -34,6 +35,13 @@ describe("checkConfig", () => {
     expect(r.checks.encryption).toBe(false);
     expect(r.checks.storage).toBe(false);
     expect(r.missing).toEqual(["STORAGE_ENDPOINT", "CREDENTIAL_ENCRYPTION_KEYS"]);
+  });
+
+  it("is not ok without an allowlist, and accepts ids instead of emails", () => {
+    const rest: Record<string, string | undefined> = good();
+    delete rest.ALLOWED_USER_EMAILS;
+    expect(checkConfig(rest)).toMatchObject({ ok: false, checks: { access: false }, missing: ["ALLOWED_USER_EMAILS (or ALLOWED_USER_IDS)"] });
+    expect(checkConfig({ ...rest, ALLOWED_USER_IDS: "abc123" }).ok).toBe(true);
   });
 
   it("warns about common mistakes that would only fail at runtime", () => {
