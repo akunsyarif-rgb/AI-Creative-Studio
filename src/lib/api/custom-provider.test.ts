@@ -47,6 +47,7 @@ describe("POST /api/keys with a custom provider", () => {
     const bad = async (body: unknown) => (await add(w, body)).status;
     expect(await bad({ apiKey: SECRET, custom: { ...custom, models: [] } })).toBe(422);
     expect(await bad({ apiKey: SECRET, custom: { ...custom, models: ["has space"] } })).toBe(422);
+    expect(await bad({ apiKey: SECRET, custom: { ...custom, models: ["https://spicyapi.ai/models/some-model"] } })).toBe(422); // a page address, not a model id
     expect(await bad({ apiKey: SECRET, custom: { ...custom, models: Array.from({ length: 11 }, (_, i) => `m${i}`) } })).toBe(422);
     expect(await bad({ apiKey: SECRET, custom: { ...custom, estimatedCostUsd: 0 } })).toBe(422);
     expect(await bad({ apiKey: SECRET, custom: { ...custom, estimatedCostUsd: 1000 } })).toBe(422);

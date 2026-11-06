@@ -64,6 +64,11 @@ describe("SpicyAPI native adapter", () => {
     }
   });
 
+  it("shows SpicyAPI's validation text on a 400 so a wrong model id is diagnosable", async () => {
+    const { adapter } = setup(() => Response.json({ code: 400, msg: "model: not found" }, { status: 400 }));
+    await expect(adapter.executeJob(req(), "i", ctx)).rejects.toMatchObject({ code: "invalid_request", message: expect.stringContaining("model: not found") });
+  });
+
   it("treats a lost createTask response as unknown outcome and does not resend", async () => {
     const { adapter, calls } = setup(() => { throw new Error("socket hang up"); });
     await expect(adapter.executeJob(req(), "i", ctx)).rejects.toMatchObject({ outcomeKnown: false });

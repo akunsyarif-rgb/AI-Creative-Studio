@@ -67,7 +67,7 @@ async function readEnvelope(res: Response): Promise<Envelope> {
 }
 
 /** Business codes from the docs (40201 balance, 40202 spend cap, 40301 model not allowed, 40901 conflict, ...). */
-function mapCreateError(status: number, code: unknown): ProviderError {
+function mapCreateError(status: number, code: unknown, msg: unknown): ProviderError {
   if (status === 402 || code === 40201 || code === 40202) {
     return new ProviderError("insufficient_funds", code === 40202 ? "The SpicyAPI spend cap for this key was reached." : "The SpicyAPI balance is too low.", true);
   }
@@ -76,7 +76,9 @@ function mapCreateError(status: number, code: unknown): ProviderError {
   if (status === 413) return new ProviderError("invalid_request", "The request was too large.", true);
   // SpicyAPI documents that an error from createTask holds and charges nothing, so the outcome is known.
   const mapped = mapStatus(status);
-  return new ProviderError(mapped.code, mapped.message, true);
+  // SpicyAPI's validation text (e.g. unknown model, bad field) is safe to show and explains a 400.
+  const detail = status === 400 && typeof msg === "string" ? ` SpicyAPI says: ${msg.replace(/[^\x20-\x7E]/g, " ").slice(0, 200)}` : "";
+  return new ProviderError(mapped.code, `${mapped.message}${detail}`, true);
 }
 
 export function createSpicyApiAdapter(cfg: CustomProviderConfig, deps: SpicyDeps = {}): ProviderAdapter {
@@ -151,7 +153,7 @@ export function createSpicyApiAdapter(cfg: CustomProviderConfig, deps: SpicyDeps
         body: JSON.stringify({ model: request.modelId, input: { prompt: params.prompt } })
       });
       const envelope = await readEnvelope(res);
-      if (!res.ok) throw mapCreateError(res.status, envelope.code);
+      if (!res.ok) throw mapCreateError(res.status, envelope.code, envelope.msg);
       const taskId = envelope.data?.taskId;
       if (typeof taskId !== "string" || !/^job_[A-Za-z0-9]{6,64}$/.test(taskId)) {
         throw new ProviderError("unknown", "SpicyAPI accepted the request but returned no task id. Check your SpicyAPI task history before retrying.", false);

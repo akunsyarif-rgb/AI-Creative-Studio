@@ -23,6 +23,7 @@ const modelId = z
   .string()
   .trim()
   .regex(/^[A-Za-z0-9][\w.\-:/@]{0,127}$/, "Invalid model id")
+  .refine((m) => !m.includes("://"), "Enter the model id (as listed in the provider's catalog), not a web address")
   .refine((m) => !m.split("/").some((seg) => seg === ".." || seg === "."), "Invalid model id");
 
 /** Settings of a user-defined OpenAI-compatible provider. */
