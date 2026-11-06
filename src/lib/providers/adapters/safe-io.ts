@@ -58,25 +58,28 @@ export function createSafeIO(baseUrl: string, deps: SafeIODeps = {}) {
   /** Downloads an image URL returned by the provider. The API key is never sent. */
   async function downloadImage(rawUrl: string): Promise<Uint8Array> {
     let current = rawUrl;
+    let reason = "unknown";
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       try {
-        const url = parsePublicHttpsUrl(current);
+        const url = parsePublicHttpsUrl(current, { allowQuery: true });
         await assertPublicHost(url, deps.lookup);
         const res = await fetchImpl(url.href, { redirect: "manual", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
         if (res.status >= 300 && res.status < 400) {
           const location = res.headers.get("location");
-          if (!location) break;
+          if (!location) { reason = "redirect without a location"; break; }
           current = new URL(location, url).href;
           continue;
         }
-        if (!res.ok) break;
+        if (!res.ok) { reason = `download answered HTTP ${res.status}`; break; }
         return await readLimited(res, MAX_IMAGE_BYTES);
-      } catch {
+      } catch (error) {
+        // Messages of these errors never contain the link itself (it is signed), only a generic reason.
+        reason = error instanceof UnsafeUrlError ? error.message : "the download failed";
         break;
       }
     }
     // The provider already generated (and may have billed) the image, so the outcome is not "known".
-    throw new ProviderError("unknown", "The provider returned an image link that could not be downloaded safely.", false);
+    throw new ProviderError("unknown", `The provider returned an image link that could not be downloaded safely (${reason}).`, false);
   }
 
   return { call, downloadImage };

@@ -36,7 +36,7 @@ describe("SpicyAPI native adapter", () => {
       if (url.endsWith("/jobs/createTask")) return env({ taskId: task, state: "queued", estimatedCost: "0.008" }, 202);
       if (url.includes("/jobs/recordInfo")) {
         polls += 1;
-        return polls < 3 ? env({ state: "running" }) : env({ state: "succeeded", cost: "0.008", output: { assets: [{ url: "https://files.example.com/o.png" }] } });
+        return polls < 3 ? env({ state: "running" }) : env({ state: "succeeded", cost: "0.008", output: { assets: [{ url: "https://files.example.com/o.png?X-Signature=abc123&Expires=1" }] } });
       }
       return new Response(PNG, { headers: { "content-type": "image/png" } });
     });
@@ -51,7 +51,7 @@ describe("SpicyAPI native adapter", () => {
     expect(calls.filter((c) => c.url.endsWith("/jobs/createTask"))).toHaveLength(1);
     expect(calls[1].url).toBe(`https://api.spicyapi.ai/api/v1/jobs/recordInfo?taskId=${task}`);
     const download = calls[calls.length - 1];
-    expect(download.url).toBe("https://files.example.com/o.png");
+    expect(download.url).toBe("https://files.example.com/o.png?X-Signature=abc123&Expires=1");
     expect(JSON.stringify(download.init.headers ?? {})).not.toContain("SECRET");
   });
 
@@ -90,6 +90,17 @@ describe("SpicyAPI native adapter", () => {
     const { adapter, calls } = setup((url) => (url.endsWith("/jobs/createTask") ? env({ taskId: task, state: "queued" }, 202) : env({ state: "running" })));
     await expect(adapter.executeJob(req(), "i", ctx)).rejects.toMatchObject({ code: "timeout", outcomeKnown: false, message: expect.stringContaining(task) });
     expect(calls.filter((c) => c.url.endsWith("/jobs/createTask"))).toHaveLength(1);
+  });
+
+  it("says why a download failed without leaking the signed link", async () => {
+    const { adapter } = setup((url) => {
+      if (url.endsWith("/jobs/createTask")) return env({ taskId: task }, 202);
+      if (url.includes("recordInfo")) return env({ state: "succeeded", output: { assets: [{ url: "https://files.example.com/o.png?X-Signature=SIGSECRET" }] } });
+      return new Response("denied", { status: 403 });
+    });
+    const err = await adapter.executeJob(req(), "i", ctx).catch((e) => e);
+    expect(err.message).toContain("HTTP 403");
+    expect(err.message).not.toContain("SIGSECRET");
   });
 
   it("rejects a malformed task id and non-image downloads", async () => {

@@ -79,7 +79,8 @@ export function isPublicAddress(ip: string): boolean {
 const BLOCKED_HOSTS = /(^|\.)(localhost|local|internal|localdomain|home\.arpa)$/i;
 
 /** Syntactic checks. Returns the normalised URL (no trailing slash) or throws UnsafeUrlError. */
-export function parsePublicHttpsUrl(raw: string): URL {
+/** `allowQuery` is for download links, which are normally signed (`?X-Signature=...`); base URLs never allow one. */
+export function parsePublicHttpsUrl(raw: string, options: { allowQuery?: boolean } = {}): URL {
   let url: URL;
   try {
     url = new URL(raw.trim());
@@ -89,7 +90,7 @@ export function parsePublicHttpsUrl(raw: string): URL {
   if (url.protocol !== "https:") throw new UnsafeUrlError("The address must start with https://.");
   if (url.username || url.password) throw new UnsafeUrlError("The address must not contain a username or password.");
   if (url.port && url.port !== "443") throw new UnsafeUrlError("Only the default HTTPS port is allowed.");
-  if (url.search || url.hash) throw new UnsafeUrlError("The address must not contain a query string or fragment.");
+  if ((url.search && !options.allowQuery) || url.hash) throw new UnsafeUrlError("The address must not contain a query string or fragment.");
   const host = url.hostname.replace(/^\[|\]$/g, "");
   if (BLOCKED_HOSTS.test(host)) throw new UnsafeUrlError("That host is not allowed.");
   if (isIP(host) && !isPublicAddress(host)) throw new UnsafeUrlError("That address is not public.");
