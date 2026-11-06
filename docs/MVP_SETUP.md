@@ -58,10 +58,11 @@ fails safely with a 4xx ("The provider rejected the request", nothing billed). P
 rough placeholders.
 
 ## Custom providers (any OpenAI-compatible API)
-On **API keys → Use any other provider** you can add a service you choose: a name, its https base URL (for example
+On **API keys → Add an OpenAI-compatible provider** you can add a service you choose: a name, its https base URL (for example
 `https://api.together.xyz/v1`), the model name(s) as that provider spells them, your own per-image cost estimate, and the key.
 The app calls `POST {baseUrl}/images/generations` (and `GET {baseUrl}/models` for **Test key**) and accepts either
-`b64_json` or an image `url` in the answer. Image generation only; providers with a different API style need a dedicated
+`b64_json` or an image `url` in the answer. Text-to-image only. This covers services that expose that OpenAI-compatible endpoint, **not every provider**: services with a
+different API style (job queues with polling, native Stability/Google/Replicate/fal APIs, image editing, video) need a dedicated
 adapter (see below).
 - The base URL is user-supplied, so it is restricted: https only, no credentials/query/odd ports, and the host must resolve
   to public addresses (checked when saving and again before every request). Redirects are refused for API calls; image
