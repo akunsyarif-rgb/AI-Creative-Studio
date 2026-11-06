@@ -17,6 +17,18 @@ const STATUS_TEXT: Record<JobView["status"], string> = {
   validating: "Checking and saving the result…", completed: "Done", failed: "Failed", cancelled: "Cancelled"
 };
 
+/** One submitted job being followed in the background; several can run at once (the server enforces the limits). */
+interface Run {
+  id: string;
+  kind: "image" | "video";
+  prompt: string;
+  job: JobView;
+  assetId: string | null;
+  url: string | null;
+  isVideo: boolean;
+  note: string | null;
+}
+
 export default function StudioPage() {
   const api = useApi();
   const [prompt, setPrompt] = useState("");
@@ -29,17 +41,36 @@ export default function StudioPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ text: string; needsKey?: boolean } | null>(null);
   const [estimate, setEstimate] = useState<Estimate | null>(null);
-  const [job, setJob] = useState<JobView | null>(null);
+  const [runs, setRuns] = useState<Run[]>([]);
   const [mode, setMode] = useState<"image" | "video">("image");
-  const [resultUrl, setResultUrl] = useState<string | null>(null);
-  const [resultIsVideo, setResultIsVideo] = useState(false);
-  const [resultAssetId, setResultAssetId] = useState<string | null>(null);
 
   // One idempotency key per logical attempt; reused when the user confirms the cost.
   const attemptKey = useRef<string | null>(null);
   const uploaded = useRef<{ file: File; assetId: string } | null>(null);
   const abort = useRef<AbortController | null>(null);
-  useEffect(() => () => abort.current?.abort(), []);
+  useEffect(() => {
+    abort.current = new AbortController();
+    return () => abort.current?.abort();
+  }, []);
+
+  const patchRun = (id: string, patch: Partial<Run>) => setRuns((cur) => cur.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+
+  /** Follows one job to its end without blocking the form, so the next one can be started meanwhile. */
+  async function track(runId: string, jobId: string, kind: "image" | "video") {
+    try {
+      const final = await pollJob(api, jobId, (job) => patchRun(runId, { job }), {
+        signal: abort.current?.signal,
+        ...(kind === "video" ? { intervalMs: 6000, timeoutMs: 20 * 60_000 } : {})
+      });
+      if (final.status === "completed" && final.outputAssetIds[0]) {
+        const asset = await getAsset(api, final.outputAssetIds[0]);
+        patchRun(runId, { assetId: final.outputAssetIds[0], url: asset.url, isVideo: asset.contentType.startsWith("video/") });
+      }
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "aborted") return;
+      patchRun(runId, { note: e instanceof ApiError ? e.message : "Lost contact while waiting. The job keeps running; check your library." });
+    }
+  }
 
   // Providers/models/parameters come from the server-side registry.
   useEffect(() => {
@@ -103,9 +134,6 @@ export default function StudioPage() {
     if (!provider || !model) return;
     setBusy(true);
     setError(null);
-    setResultUrl(null);
-    setResultIsVideo(false);
-    setResultAssetId(null);
     try {
       let inputAssetId: string | undefined;
       if (file) {
@@ -128,20 +156,9 @@ export default function StudioPage() {
       });
       setEstimate(null);
       attemptKey.current = null; // next click is a new job
-      setJob(res.job);
-
-      abort.current?.abort();
-      abort.current = new AbortController();
-      const final = await pollJob(api, res.job.id, setJob, {
-        signal: abort.current.signal,
-        ...(mode === "video" ? { intervalMs: 6000, timeoutMs: 20 * 60_000 } : {})
-      });
-      if (final.status === "completed" && final.outputAssetIds[0]) {
-        setResultAssetId(final.outputAssetIds[0]);
-        const asset = await getAsset(api, final.outputAssetIds[0]);
-        setResultIsVideo(asset.contentType.startsWith("video/"));
-        setResultUrl(asset.url);
-      }
+      const kind = mode;
+      setRuns((cur) => [{ id: res.job.id, kind, prompt: prompt.trim(), job: res.job, assetId: null, url: null, isVideo: false, note: null }, ...cur].slice(0, 8));
+      void track(res.job.id, res.job.id, kind); // not awaited: the form is free again right away
     } catch (e) {
       if (e instanceof ApiError && e.code === "cost_confirmation_required") {
         const est = (e.details as { estimate?: Estimate } | undefined)?.estimate;
@@ -164,13 +181,11 @@ export default function StudioPage() {
     void submit();
   }
 
-  const working = job !== null && !["completed", "failed", "cancelled"].includes(job.status);
-
   return (
     <>
-      <p className="eyebrow">IMAGE STUDIO</p>
-      <h1 className="page-title">Create an image</h1>
-      <p className="muted lead">Describe what you want. Add a reference image to edit it instead. Results are saved privately to your library.</p>
+      <p className="eyebrow">STUDIO</p>
+      <h1 className="page-title">Create</h1>
+      <p className="muted lead">Describe what you want. Add an image to edit it or to start a video from it. You can start more while others run (up to 3 at once, at most 2 videos). Results are saved privately to your library.</p>
 
       <form className="panel stack" onSubmit={onSubmit}>
         <div className="field" role="group" aria-label="What to create">
@@ -271,33 +286,38 @@ export default function StudioPage() {
         )}
       </form>
 
-      {job && (
-        <section className="panel stack" aria-live="polite" aria-label="Result">
-          <div className="row-between">
-            <h2>{STATUS_TEXT[job.status]}</h2>
-            {working && <span className="spinner" aria-hidden="true" />}
-          </div>
-          {job.status === "failed" && <p className="notice notice-error" role="alert">{job.errorMessage ?? "The job failed."}</p>}
-          {resultUrl && (
-            <>
-              {resultIsVideo ? (
-                <video className="result-img" src={resultUrl} controls playsInline preload="metadata" aria-label={`Generated video for: ${prompt.trim().slice(0, 120)}`} />
-              ) : (
-                <>
-                  {/* Short-lived signed URL from our private bucket; next/image optimisation does not apply. */}
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img className="result-img" src={resultUrl} alt={`Generated image for: ${prompt.trim().slice(0, 120)}`} />
-                </>
-              )}
-              <div className="actions">
-                <button className="btn" type="button" onClick={() => resultAssetId && void downloadAsset(api, resultAssetId)}>Download</button>
-                <Link className="btn" href="/dashboard/library">Open library</Link>
-              </div>
-              <p className="muted small">AI-generated {resultIsVideo ? "video" : "image"}. The link expires in a few minutes; the file stays in your private library.</p>
-            </>
-          )}
-        </section>
-      )}
+      {runs.map((run) => {
+        const working = !["completed", "failed", "cancelled"].includes(run.job.status);
+        return (
+          <section className="panel stack" aria-live="polite" aria-label="Result" key={run.id}>
+            <div className="row-between">
+              <h2>{STATUS_TEXT[run.job.status]}</h2>
+              {working && <span className="spinner" aria-hidden="true" />}
+            </div>
+            <p className="muted small">{run.kind === "video" ? "Video" : "Image"}: {run.prompt.slice(0, 120)}</p>
+            {run.job.status === "failed" && <p className="notice notice-error" role="alert">{run.job.errorMessage ?? "The job failed."}</p>}
+            {run.note && <p className="notice notice-warn small" role="status">{run.note}</p>}
+            {run.url && (
+              <>
+                {run.isVideo ? (
+                  <video className="result-img" src={run.url} controls playsInline preload="metadata" aria-label={`Generated video for: ${run.prompt.slice(0, 120)}`} />
+                ) : (
+                  <>
+                    {/* Short-lived signed URL from our private bucket; next/image optimisation does not apply. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img className="result-img" src={run.url} alt={`Generated image for: ${run.prompt.slice(0, 120)}`} />
+                  </>
+                )}
+                <div className="actions">
+                  <button className="btn" type="button" onClick={() => run.assetId && void downloadAsset(api, run.assetId)}>Download</button>
+                  <Link className="btn" href="/dashboard/library">Open library</Link>
+                </div>
+                <p className="muted small">AI-generated {run.isVideo ? "video" : "image"}. The link expires in a few minutes; the file stays in your private library.</p>
+              </>
+            )}
+          </section>
+        );
+      })}
     </>
   );
 }

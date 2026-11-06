@@ -121,7 +121,7 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
         if (existing) return { job: existing, created: false };
         const record: JobRecord = {
           ...job, id: `job${++seq}`, status: "queued", progress: null, errorCode: null, errorMessage: null, outputAssetIds: [], providerJobId: null,
-          estimatedCost: job.estimatedCost ?? null, currency: job.currency ?? null, createdAt: "2026-01-01T00:00:00.000Z"
+          estimatedCost: job.estimatedCost ?? null, currency: job.currency ?? null, createdAt: new Date().toISOString()
         };
         jobs.set(record.id, record);
         return { job: record, created: true };

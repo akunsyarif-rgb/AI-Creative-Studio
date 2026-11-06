@@ -83,6 +83,11 @@ it cannot fill). Give a model its own price by writing it after `=` in the model
 `alibaba/qwen-image-2.1-turbo/text-to-image=0.0144`; models without one use the provider's default cost (or ask for
 "price unknown" consent when that is empty).
 
+**Running several at once.** You can start a new image or video while others are still running. Limits (enforced on the
+server): at most 3 jobs at once and at most 2 of them videos, so 3 images, or 1 video + 2 images, or 2 videos + 1 image. A
+job counts while it is running and younger than 10 minutes (images) or 45 minutes (videos), so a job that never finished
+cannot block you forever. The limit is soft: two requests in the very same instant could both get through.
+
 **Video (SpicyAPI).** A model id ending in `/text-to-video` or `/image-to-video` appears when you choose **Video** in the
 Studio (with a start image attached it uses the image-to-video model). The app reads the model's input fields first and
 checks the length you chose; it then creates ONE task and saves SpicyAPI's task id. The video itself is collected whenever

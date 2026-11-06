@@ -10,6 +10,7 @@ import { adapterSupports, resolveAdapter } from "@/lib/providers/resolve";
 import type { Lookup } from "@/lib/net/public-url";
 import { ProviderError, type ProviderAdapter } from "@/lib/providers/types";
 import { credentialContext } from "@/lib/security/credential-context";
+import { concurrencyVerdict } from "@/lib/jobs/concurrency";
 import { executeJob, reconcileJob, type ExecuteDeps } from "@/lib/jobs/execute";
 import { apiError, internalError, json, parseJson, unauthorized } from "./http";
 import { enforceRate, type RateLimiter } from "./rate-limit";
@@ -134,6 +135,15 @@ export async function postJob(request: Request, deps: ApiDeps): Promise<Response
 
     if (!(await deps.keys.get(user.userId, input.providerId))) {
       return apiError(422, "provider_key_missing", "Add an API key for this provider first.");
+    }
+
+    // Concurrency: at most 3 jobs at once, at most 2 videos. A repeat of an existing request (same idempotency key)
+    // is never blocked, because it creates nothing new. Checked before cost consent so nobody confirms a price
+    // for a request that would be refused. (Soft limit: two requests in the very same instant could both pass.)
+    const recent = (await deps.jobs.listByOwner(user.userId, 20)).jobs;
+    if (!recent.some((j) => j.idempotencyKey === input.idempotencyKey)) {
+      const verdict = concurrencyVerdict(recent, input.capability, Date.now());
+      if (!verdict.allowed) return apiError(429, "concurrency_limit", verdict.reason ?? "Too many jobs are running.", { active: verdict.active });
     }
 
     // Cost disclosure and consent: never spend silently, never exceed the ceiling.

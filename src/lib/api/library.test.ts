@@ -6,6 +6,8 @@ async function seedJobs(w: ReturnType<typeof createTestWorld>, n: number, token 
   for (let i = 1; i <= n; i++) {
     const res = await postJob(jsonRequest("/api/jobs", { token, body: { projectId: "p", capability: "text_to_image", providerId: "fake", modelId: "m1", parameters: { prompt: `prompt ${i}` }, idempotencyKey: `idem-key-${token.slice(10, 15)}-${i}` } }), w.deps);
     expect(res.status).toBe(202);
+    // These tests are about listing, not about the concurrency limit: let each job finish first.
+    for (const job of w.jobs.values()) job.status = "completed";
   }
 }
 const list = (w: ReturnType<typeof createTestWorld>, qs = "", token = ALICE) => getJobs(jsonRequest(`/api/jobs${qs}`, { token, method: "GET" }), w.deps);
