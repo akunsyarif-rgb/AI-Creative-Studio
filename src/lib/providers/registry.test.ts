@@ -50,7 +50,7 @@ describe("ProviderRegistry", () => {
 
 describe("default registry", () => {
   it("registers OpenAI and OpenRouter with their models and parameters, and not the template", () => {
-    expect(providerRegistry.configs().map((c) => c.id)).toEqual(["openai", "openrouter", "spicyapi"]);
+    expect(providerRegistry.configs().map((c) => c.id)).toEqual(["openai", "openrouter"]);
     expect(providerRegistry.get("openrouter")!.config.availableModels.length).toBeGreaterThanOrEqual(2);
     expect(providerRegistry.supports("openrouter", "black-forest-labs/flux-schnell", "text_to_image")).toBe(true);
     expect(providerRegistry.supports("openrouter", "stabilityai/stable-diffusion-3", "text_to_image")).toBe(true);

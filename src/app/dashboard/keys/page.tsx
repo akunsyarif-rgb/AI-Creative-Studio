@@ -200,7 +200,7 @@ export default function KeysPage() {
                   required type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" spellCheck={false} maxLength={300}
                   placeholder="https://api.together.xyz/v1" value={cUrl} onChange={(e) => setCUrl(e.target.value)}
                 />
-                <small className="muted">{cStyle === "http" ? "Only the site address, for example https://api.example.com (the path goes below). Must start with https://." : "Must start with https://. Do not include /images/generations."}</small>
+                <small className="muted">{cStyle === "http" ? "Only the site address, for example https://api.example.com (the path goes below). Must start with https://." : "Must start with https://. Do not include /images/generations. For SpicyAPI use https://api.spicyapi.ai/api/v1 (see docs)."}</small>
               </label>
               <label className="field">
                 <span>Model name(s)</span>
