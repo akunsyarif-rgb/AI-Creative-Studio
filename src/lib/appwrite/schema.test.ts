@@ -42,4 +42,14 @@ describe("Appwrite row-level security policy", () => {
     }
     expect(new Set(TABLE_SPECS.map((t) => t.id)).size).toBe(3);
   });
+
+  it("defines optional, non-secret columns for custom providers on the keys table", () => {
+    const keys = TABLE_SPECS.find((t) => t.kind === "keys")!;
+    for (const key of ["label", "baseUrl", "models", "estimatedCostUsd"]) {
+      const col = keys.columns.find((c) => c.key === key);
+      expect(col, key).toBeDefined();
+      expect(col!.required).toBe(false);
+    }
+    expect(keys.columns.find((c) => c.key === "models")!.type).toBe("text");
+  });
 });

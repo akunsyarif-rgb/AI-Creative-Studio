@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { authenticate } from "@/lib/auth/session";
+import { UnsafeUrlError, assertSafeBaseUrl } from "@/lib/net/public-url";
+import { CUSTOM_PREFIX } from "@/lib/providers/adapters/openai-compatible";
 import { credentialContext } from "@/lib/security/credential-context";
 import { apiError, internalError, json, parseJson, unauthorized } from "./http";
 import type { ApiDeps } from "./handlers";
@@ -15,7 +17,30 @@ const apiKey = z
   .max(2000)
   .regex(/^\S+$/, "API key must not contain whitespace");
 
-export const createKeySchema = z.object({ providerId, apiKey });
+const modelId = z.string().trim().regex(/^[A-Za-z0-9][\w.\-:/@]{0,127}$/, "Invalid model id");
+
+/** Settings of a user-defined OpenAI-compatible provider. */
+const customSchema = z.object({
+  label: z.string().trim().min(2).max(64),
+  baseUrl: z.string().trim().min(8).max(300),
+  models: z.array(modelId).min(1).max(10),
+  /** The user's own per-image price guess; drives the cost-confirmation gate (an unknown price is never "free"). */
+  estimatedCostUsd: z.number().min(0.0001).max(100)
+});
+
+export const createKeySchema = z
+  .object({ providerId: providerId.optional(), apiKey, custom: customSchema.optional() })
+  .superRefine((v, ctx) => {
+    if (v.custom && v.providerId) ctx.addIssue({ code: "custom", path: ["providerId"], message: "Do not send providerId for a custom provider" });
+    if (!v.custom && !v.providerId) ctx.addIssue({ code: "custom", path: ["providerId"], message: "providerId is required" });
+    if (!v.custom && v.providerId?.startsWith(CUSTOM_PREFIX)) ctx.addIssue({ code: "custom", path: ["providerId"], message: "Reserved prefix" });
+  });
+
+/** `custom-<slug>` derived from the label, so two labels that differ only in punctuation collide (and are rejected). */
+export function customProviderId(label: string): string | null {
+  const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/g, "");
+  return slug.length >= 2 ? `${CUSTOM_PREFIX}${slug}` : null;
+}
 export const updateKeySchema = z.object({ apiKey });
 
 /** Reveal at most 4 trailing characters, and only when that is a small fraction of the key. */
@@ -23,9 +48,10 @@ export function maskLast4(secret: string): string | null {
   return secret.length >= 16 ? secret.slice(-4) : null;
 }
 
-function publicKey(meta: { providerId: string; last4: string | null; validationStatus: string; createdAt: string; updatedAt: string }) {
+function publicKey(meta: { providerId: string; last4: string | null; validationStatus: string; createdAt: string; updatedAt: string; custom: { label: string; baseUrl: string; models: string[]; estimatedCostUsd: number } | null }) {
   return {
     providerId: meta.providerId,
+    custom: meta.custom ? { label: meta.custom.label, baseUrl: meta.custom.baseUrl, models: meta.custom.models, estimatedCostUsd: meta.custom.estimatedCostUsd } : null,
     masked: meta.last4 ? `••••${meta.last4}` : "••••",
     validationStatus: meta.validationStatus,
     createdAt: meta.createdAt,
@@ -46,9 +72,24 @@ export async function postKey(request: Request, deps: ApiDeps): Promise<Response
     if (limited) return limited;
     const body = await parseJson(request, createKeySchema);
     if (!body.ok) return body.response;
-    const { providerId: provider, apiKey: secret } = body.data;
+    const { apiKey: secret, custom } = body.data;
+    let provider = body.data.providerId as string;
+    let customConfig: { label: string; baseUrl: string; models: string[]; estimatedCostUsd: number } | undefined;
+    if (custom) {
+      const id = customProviderId(custom.label);
+      if (!id) return apiError(422, "validation_failed", "Choose a name with at least two letters or digits.");
+      let url: URL;
+      try {
+        url = await assertSafeBaseUrl(custom.baseUrl, deps.lookup);
+      } catch (error) {
+        if (error instanceof UnsafeUrlError) return apiError(422, "invalid_base_url", error.message);
+        throw error;
+      }
+      provider = id;
+      customConfig = { label: custom.label, baseUrl: url.href.replace(/\/$/, ""), models: [...new Set(custom.models)], estimatedCostUsd: custom.estimatedCostUsd };
+    }
     const sealed = await seal(deps, user.userId, provider, secret);
-    const meta = await deps.keys.create({ ownerId: user.userId, providerId: provider, ...sealed });
+    const meta = await deps.keys.create({ ownerId: user.userId, providerId: provider, ...sealed, ...(customConfig ? { custom: customConfig } : {}) });
     if (!meta) return apiError(409, "key_exists", "A key for this provider already exists. Use PUT to rotate it.");
     return json(201, { key: publicKey(meta) });
   } catch (error) {

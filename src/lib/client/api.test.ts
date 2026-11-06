@@ -66,7 +66,7 @@ describe("pollJob", () => {
   });
 });
 
-import { defaultParams, imageModels, imageProviders, type ProviderView } from "./api";
+import { defaultParams, imageModels, imageProviders, parseModelList, type ProviderView } from "./api";
 
 describe("provider view helpers", () => {
   const m = (modelId: string, capabilities: string[], parameters: ProviderView["models"][0]["parameters"] = []) => ({ modelId, displayName: modelId, capabilities, isFreeTier: false, parameters });
@@ -122,5 +122,13 @@ describe("library helpers", () => {
     expect(isActive({ status: "validating" })).toBe(true);
     expect(isActive({ status: "completed" })).toBe(false);
     expect(isActive({ status: "failed" })).toBe(false);
+  });
+});
+
+describe("parseModelList", () => {
+  it("splits on commas, spaces, semicolons and new lines, trims and de-duplicates", () => {
+    expect(parseModelList("a/b, c-d ;e\nf,, a/b  ")).toEqual(["a/b", "c-d", "e", "f"]);
+    expect(parseModelList("")).toEqual([]);
+    expect(parseModelList(" , ")).toEqual([]);
   });
 });

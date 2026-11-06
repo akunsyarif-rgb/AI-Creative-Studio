@@ -1,7 +1,7 @@
 import type { AssetsRepository, JobRecord, JobPatch, JobsRepository, KeysRepository } from "@/lib/data/repositories";
 import { canTransitionJob } from "@/lib/jobs/states";
-import type { ProviderRegistry } from "@/lib/providers/registry";
-import { ProviderError, type JobStatus, type ProviderFile } from "@/lib/providers/types";
+import { adapterSupports } from "@/lib/providers/resolve";
+import { ProviderError, type JobStatus, type ProviderAdapter, type ProviderFile } from "@/lib/providers/types";
 import { credentialContext } from "@/lib/security/credential-context";
 import { sniffMime } from "@/lib/storage/sniff";
 import { StorageError, newObjectKey, validateUpload, type ObjectStorage } from "@/lib/storage/r2";
@@ -13,7 +13,7 @@ export interface ExecuteDeps {
   storage: ObjectStorage;
   vault: { decrypt(ciphertext: string, context: string): Promise<string> };
   /** Adapters are resolved per job from `job.providerId`; nothing here is provider-specific. */
-  providers: Pick<ProviderRegistry, "get" | "supports">;
+  resolveAdapter(ownerId: string, providerId: string): Promise<ProviderAdapter | undefined>;
 }
 
 class Fail extends Error {
@@ -49,8 +49,8 @@ export async function executeJob(deps: ExecuteDeps, job: JobRecord): Promise<voi
   };
 
   try {
-    const adapter = deps.providers.get(job.providerId);
-    if (!adapter || !deps.providers.supports(job.providerId, job.modelId, job.capability)) throw new Fail("unsupported_provider", "This provider is not available.");
+    const adapter = await deps.resolveAdapter(job.ownerId, job.providerId);
+    if (!adapter || !adapterSupports(adapter, job.modelId, job.capability)) throw new Fail("unsupported_provider", "This provider is not available.");
 
     const ciphertext = await deps.keys.getCiphertext(job.ownerId, job.providerId);
     if (!ciphertext) throw new Fail("provider_key_missing", "No API key is saved for this provider.");

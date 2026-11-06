@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { authenticate, type TokenVerifier } from "@/lib/auth/session";
-import type { AssetsRepository, JobRecord, JobsRepository, KeysRepository } from "@/lib/data/repositories";
+import type { AssetsRepository, CustomProviderConfig, JobRecord, JobsRepository, KeysRepository } from "@/lib/data/repositories";
 import { CAPABILITIES } from "@/lib/providers/types";
 import { SNIFF_BYTES, sniffMime } from "@/lib/storage/sniff";
 import { StorageError, newObjectKey, validateUpload, type ObjectStorage } from "@/lib/storage/r2";
 import type { ProviderRegistry } from "@/lib/providers/registry";
-import { ProviderError } from "@/lib/providers/types";
+import { adapterSupports, resolveAdapter } from "@/lib/providers/resolve";
+import type { Lookup } from "@/lib/net/public-url";
+import { ProviderError, type ProviderAdapter } from "@/lib/providers/types";
 import { credentialContext } from "@/lib/security/credential-context";
 import { executeJob } from "@/lib/jobs/execute";
 import { apiError, internalError, json, parseJson, unauthorized } from "./http";
@@ -36,6 +38,10 @@ export interface ApiDeps {
   storage: ObjectStorage;
   /** Source of truth for available providers/models/capabilities. */
   providers: ProviderRegistry;
+  /** Builds the adapter for a user's custom (OpenAI-compatible) provider. */
+  buildCustomAdapter: (config: CustomProviderConfig) => ProviderAdapter;
+  /** DNS lookup override (tests). Defaults to the system resolver. */
+  lookup?: Lookup;
 }
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,35}$/, "Invalid id");
@@ -99,8 +105,8 @@ export async function postJob(request: Request, deps: ApiDeps): Promise<Response
     const { confirmedMaxCostUsd, ...input } = body.data;
 
     // Fail closed: unknown provider/model/capability => nothing is persisted or submitted.
-    const adapter = deps.providers.get(input.providerId);
-    if (!adapter || !deps.providers.supports(input.providerId, input.modelId, input.capability)) {
+    const adapter = await resolveAdapter(deps, user.userId, input.providerId);
+    if (!adapter || !adapterSupports(adapter, input.modelId, input.capability)) {
       return apiError(422, "unsupported_capability", "This provider/model does not support the requested capability.");
     }
 
@@ -155,7 +161,7 @@ export async function postJob(request: Request, deps: ApiDeps): Promise<Response
         executeJob(
           {
             jobs: deps.jobs, assets: deps.assets, keys: deps.keys, storage: deps.storage, vault: deps.vault,
-            providers: deps.providers
+            resolveAdapter: (ownerId, providerId) => resolveAdapter(deps, ownerId, providerId)
           },
           job
         )
@@ -201,15 +207,17 @@ export async function getAssetDownload(request: Request, deps: ApiDeps, assetId:
   }
 }
 
-/** Lists registered providers and their models/parameters (non-secret static config). */
+/** Lists built-in providers plus the caller's own custom providers, with their models/parameters (non-secret). */
 export async function getProviders(request: Request, deps: ApiDeps): Promise<Response> {
   try {
     const user = await authenticate(request, deps.verifyToken);
     if (!user) return unauthorized();
-    const providers = deps.providers.configs().map((c) => ({
+    const customConfigs = (await deps.keys.listCustom(user.userId)).map((c) => deps.buildCustomAdapter(c).config);
+    const view = (c: (typeof customConfigs)[number], custom: boolean) => ({
       id: c.id,
       name: c.name,
       description: c.description ?? null,
+      custom,
       models: c.availableModels.map((m) => ({
         modelId: m.modelId,
         displayName: m.displayName,
@@ -217,7 +225,8 @@ export async function getProviders(request: Request, deps: ApiDeps): Promise<Res
         isFreeTier: m.isFreeTier ?? false,
         parameters: m.parameters ?? []
       }))
-    }));
+    });
+    const providers = [...deps.providers.configs().map((c) => view(c, false)), ...customConfigs.map((c) => view(c, true))];
     return json(200, { providers });
   } catch (error) {
     return internalError(error);
@@ -231,7 +240,7 @@ export async function postProviderTest(request: Request, deps: ApiDeps, provider
     if (!user) return unauthorized();
     const limited = enforceRate(deps.limiter, "providerTest", user.userId);
     if (limited) return limited;
-    const adapter = /^[a-z0-9][a-z0-9_-]{1,63}$/.test(providerId) ? deps.providers.get(providerId) : undefined;
+    const adapter = /^[a-z0-9][a-z0-9_-]{1,63}$/.test(providerId) ? await resolveAdapter(deps, user.userId, providerId) : undefined;
     if (!adapter) return apiError(404, "not_found", "Provider not found.");
 
     const ciphertext = await deps.keys.getCiphertext(user.userId, providerId);

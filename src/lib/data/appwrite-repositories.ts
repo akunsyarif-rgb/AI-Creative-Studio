@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { AppwriteException, Query, type Models, type TablesDB } from "node-appwrite";
 import { TABLES, rowPermissions } from "@/lib/appwrite/schema";
-import type { AssetRecord, AssetsRepository, JobPatch, JobRecord, JobsRepository, KeyMetadata, KeysRepository, NewJob } from "./repositories";
+import type { AssetRecord, AssetsRepository, CustomProviderConfig, JobPatch, JobRecord, JobsRepository, KeyMetadata, KeysRepository, NewJob } from "./repositories";
 
 /** The TablesDB methods the repositories use; the real admin client is injected by `api/deps.ts`. */
 export type RowsClient = Pick<TablesDB, "createRow" | "getRow" | "listRows" | "updateRow" | "deleteRow">;
@@ -119,10 +119,29 @@ export function appwriteAssetsRepository({ tables, databaseId }: RepoContext): A
   };
 }
 
-type KeyRow = Models.Row & { ownerId?: string; validatedAt?: string | null; providerId: string; last4?: string | null; validationStatus: KeyMetadata["validationStatus"] };
+type KeyRow = Models.Row & {
+  ownerId?: string; validatedAt?: string | null; providerId: string; last4?: string | null;
+  validationStatus: KeyMetadata["validationStatus"];
+  label?: string | null; baseUrl?: string | null; models?: string | null; estimatedCostUsd?: number | null;
+};
+
+/** Non-secret columns only: ciphertext is never selected by metadata reads. */
+const META_COLUMNS = ["providerId", "last4", "validationStatus", "label", "baseUrl", "models", "estimatedCostUsd"];
+
+function toCustom(d: KeyRow): CustomProviderConfig | null {
+  if (!d.baseUrl) return null;
+  let models: string[] = [];
+  try {
+    const parsed = JSON.parse(d.models ?? "[]");
+    models = Array.isArray(parsed) ? parsed.filter((m): m is string => typeof m === "string") : [];
+  } catch {
+    models = [];
+  }
+  return { providerId: d.providerId, label: d.label ?? d.providerId, baseUrl: d.baseUrl, models, estimatedCostUsd: d.estimatedCostUsd ?? 0 };
+}
 
 const toKeyMeta = (d: KeyRow): KeyMetadata => ({
-  providerId: d.providerId, last4: d.last4 ?? null, validationStatus: d.validationStatus,
+  providerId: d.providerId, last4: d.last4 ?? null, validationStatus: d.validationStatus, custom: toCustom(d),
   createdAt: d.$createdAt, updatedAt: d.$updatedAt
 });
 
@@ -133,11 +152,14 @@ export function appwriteKeysRepository({ tables, databaseId }: RepoContext): Key
   // Owner-derived id: a user can only ever address their own key document.
   const idFor = (ownerId: string, providerId: string) => deterministicId(ownerId, `key:${providerId}`);
   return {
-    async create({ ownerId, providerId, ...secret }) {
+    async create({ ownerId, providerId, custom, ...secret }) {
       try {
         const doc = await tables.createRow<KeyRow>({
           databaseId, tableId, rowId: idFor(ownerId, providerId),
-          data: { ownerId, providerId, ...secret, validationStatus: "unvalidated" },
+          data: {
+            ownerId, providerId, ...secret, validationStatus: "unvalidated",
+            ...(custom ? { label: custom.label, baseUrl: custom.baseUrl, models: JSON.stringify(custom.models), estimatedCostUsd: custom.estimatedCostUsd } : {})
+          },
           permissions: rowPermissions("keys", ownerId)
         });
         return toKeyMeta(doc);
@@ -163,13 +185,30 @@ export function appwriteKeysRepository({ tables, databaseId }: RepoContext): Key
         // Select only non-secret columns so ciphertext is never loaded here.
         const doc = await tables.getRow<KeyRow>({
           databaseId, tableId, rowId: idFor(ownerId, providerId),
-          queries: [Query.select(["providerId", "last4", "validationStatus"])]
+          queries: [Query.select(META_COLUMNS)]
         });
         return toKeyMeta(doc);
       } catch (error) {
         if (isCode(error, 404)) return null;
         throw error;
       }
+    },
+    async getCustomConfig(ownerId, providerId) {
+      try {
+        const row = await tables.getRow<KeyRow>({
+          databaseId, tableId, rowId: idFor(ownerId, providerId), queries: [Query.select(META_COLUMNS)]
+        });
+        return toCustom(row);
+      } catch (error) {
+        if (isCode(error, 404)) return null;
+        throw error;
+      }
+    },
+    async listCustom(ownerId) {
+      const res = await tables.listRows<KeyRow>({
+        databaseId, tableId, queries: [Query.equal("ownerId", ownerId), Query.select(META_COLUMNS), Query.limit(100)]
+      });
+      return res.rows.map(toCustom).filter((c): c is CustomProviderConfig => c !== null);
     },
     async getCiphertext(ownerId, providerId) {
       try {
@@ -197,7 +236,7 @@ export function appwriteKeysRepository({ tables, databaseId }: RepoContext): Key
     async list(ownerId) {
       const res = await tables.listRows<KeyRow>({
         databaseId, tableId,
-        queries: [Query.equal("ownerId", ownerId), Query.select(["providerId", "last4", "validationStatus"]), Query.limit(100)]
+        queries: [Query.equal("ownerId", ownerId), Query.select(META_COLUMNS), Query.limit(100)]
       });
       return res.rows.map(toKeyMeta);
     },
