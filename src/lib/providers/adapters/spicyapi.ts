@@ -3,7 +3,7 @@ import { z } from "zod";
 import { readLimited } from "@/lib/net/public-url";
 import type { CustomProviderConfig } from "@/lib/data/repositories";
 import { sniffMime } from "@/lib/storage/sniff";
-import { MAX_IMAGE_BYTES, createSafeIO, mapStatus, type SafeIODeps } from "./safe-io";
+import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, createSafeIO, mapStatus, type SafeIODeps } from "./safe-io";
 import { userPriceFor } from "../pricing";
 import {
   ProviderError,
@@ -45,14 +45,23 @@ export function isSpicyBaseUrl(baseUrl: string): boolean {
 }
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const VIDEO_TYPES = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 const MAX_JSON_BYTES = 1024 * 1024;
 const PARAMS = z.object({ prompt: z.string().trim().min(1).max(4000) }).strict();
+const VIDEO_PARAMS = z.object({ prompt: z.string().trim().min(1).max(4000), duration: z.coerce.number().int().min(1).max(30).optional() }).strict();
+const DURATION_PARAM = {
+  key: "duration", label: "Length (seconds)", default: "5",
+  options: ["3", "5", "8", "10", "15"].map((v) => ({ value: v, label: `${v} seconds` }))
+};
+const isVideo = (c: Capability) => c === "text_to_video" || c === "image_to_video";
 /** Inputs travel as data: URIs (SpicyAPI documents only "small" ones), so keep them modest. */
 export const MAX_EDIT_INPUT_BYTES = 3 * 1024 * 1024;
 
 /** What a SpicyAPI model id can do, from its task suffix. Anything unrecognised is treated as text-to-image. */
 export function capabilitiesForModel(modelId: string): Capability[] {
   if (/\/edit$/.test(modelId)) return ["image_to_image"];
+  if (/\/image-to-video$/.test(modelId)) return ["image_to_video"];
+  if (/\/text-to-video$/.test(modelId)) return ["text_to_video"];
   return ["text_to_image"];
 }
 
@@ -60,28 +69,60 @@ function encodeModelPath(modelId: string): string {
   return modelId.split("/").map(encodeURIComponent).join("/");
 }
 
-interface SchemaProperty { type?: unknown; default?: unknown; minItems?: unknown; maxItems?: unknown }
+interface SchemaProperty { type?: unknown; default?: unknown; minItems?: unknown; maxItems?: unknown; enum?: unknown; minimum?: unknown; maximum?: unknown }
 
-/** Builds `input` for an edit from the model's own schema; throws a known-outcome error if it cannot. */
-export function buildEditInput(schema: unknown, prompt: string, dataUri: string): Record<string, unknown> {
+interface InputPlan { prompt: string; dataUri?: string; duration?: number }
+
+/**
+ * Builds `input` from the model's own schema; throws a known-outcome error (nothing billable happened) if it cannot.
+ * Sends only fields the schema declares. `dataUri` set = the model must accept one input image.
+ */
+export function buildInput(schema: unknown, plan: InputPlan): Record<string, unknown> {
   const s = schema as { properties?: Record<string, SchemaProperty>; required?: unknown } | null;
   const props = s && typeof s === "object" ? s.properties : undefined;
   if (!props || typeof props !== "object") throw new ProviderError("invalid_request", "Could not read this model's input fields, so nothing was sent.", true);
-  if (!("prompt" in props)) throw new ProviderError("invalid_request", "This model does not take a text prompt for edits.", true);
-  const input: Record<string, unknown> = { prompt };
-  const array = props.image_urls;
-  if (array && (array.type === "array" || array.type === undefined)) {
-    if (typeof array.minItems === "number" && array.minItems > 1) throw new ProviderError("invalid_request", `This model needs at least ${array.minItems} input images; only one is supported here.`, true);
-    input.image_urls = [dataUri];
-  } else if (props.image_url) {
-    input.image_url = dataUri;
-  } else {
-    throw new ProviderError("invalid_request", "This model does not accept an input image. Choose an edit model.", true);
+  if (!("prompt" in props)) throw new ProviderError("invalid_request", "This model does not take a text prompt.", true);
+  const input: Record<string, unknown> = { prompt: plan.prompt };
+  if (plan.dataUri !== undefined) {
+    const array = props.image_urls;
+    if (array && (array.type === "array" || array.type === undefined)) {
+      if (typeof array.minItems === "number" && array.minItems > 1) throw new ProviderError("invalid_request", `This model needs at least ${array.minItems} input images; only one is supported here.`, true);
+      input.image_urls = [plan.dataUri];
+    } else if (props.image_url) {
+      input.image_url = plan.dataUri;
+    } else {
+      throw new ProviderError("invalid_request", "This model does not accept an input image. Choose a different model.", true);
+    }
+  }
+  if (plan.duration !== undefined) {
+    const key = "duration_seconds" in props ? "duration_seconds" : "duration" in props ? "duration" : null;
+    if (key) {
+      const d = props[key];
+      if (Array.isArray(d.enum) && !d.enum.some((v) => Number(v) === plan.duration)) {
+        throw new ProviderError("invalid_request", `This model allows lengths of ${d.enum.slice(0, 8).join(", ")} seconds. Nothing was sent.`, true);
+      }
+      if ((typeof d.minimum === "number" && plan.duration < d.minimum) || (typeof d.maximum === "number" && plan.duration > d.maximum)) {
+        throw new ProviderError("invalid_request", `This model allows ${d.minimum ?? "any"}–${d.maximum ?? "any"} seconds. Nothing was sent.`, true);
+      }
+      input[key] = d.type === "string" ? String(plan.duration) : plan.duration;
+    }
   }
   const required = Array.isArray(s?.required) ? (s!.required as unknown[]).filter((k): k is string => typeof k === "string") : [];
   const missing = required.filter((k) => !(k in input) && props[k]?.default === undefined);
   if (missing.length) throw new ProviderError("invalid_request", `This model needs fields this app cannot fill yet (${missing.slice(0, 5).join(", ")}). Nothing was sent.`, true);
   return input;
+}
+
+/** Edit input: prompt plus exactly one image. */
+export function buildEditInput(schema: unknown, prompt: string, dataUri: string): Record<string, unknown> {
+  return buildInput(schema, { prompt, dataUri });
+}
+
+/** The error for a task that ended without a result. Failed and expired tasks normally release the hold. */
+function taskEndedError(done: Record<string, unknown>): ProviderError {
+  const code = done.errorCode;
+  if (code === "content_rejected") return new ProviderError("content_policy", "SpicyAPI refused this prompt. It may have been charged; check the task history.", false);
+  return new ProviderError(done.state === "expired" ? "timeout" : "unavailable", `SpicyAPI could not finish the task (${typeof code === "string" ? code : String(done.state)}). The hold is normally released.`, true);
 }
 
 /** Total time spent waiting for one task. The route allows 300 s, so stay well inside it. */
@@ -125,8 +166,11 @@ export function createSpicyApiAdapter(cfg: CustomProviderConfig, deps: SpicyDeps
   const config: ProviderConfig = {
     id: cfg.providerId,
     name: cfg.label,
-    description: "SpicyAPI (native task API). Text-to-image and single-image edit. The price is not known in advance, so you confirm each request; set a spend cap on the key.",
-    availableModels: cfg.models.map((modelId) => ({ modelId, displayName: modelId, capabilities: capabilitiesForModel(modelId), isFreeTier: false, parameters: [] }))
+    description: "SpicyAPI (native task API). Images (text-to-image, single-image edit) and video (text-to-video, image-to-video; collected in the background). The price is not known in advance, so you confirm each request; set a spend cap on the key.",
+    availableModels: cfg.models.map((modelId) => {
+      const capabilities = capabilitiesForModel(modelId);
+      return { modelId, displayName: modelId, capabilities, isFreeTier: false, parameters: capabilities.some(isVideo) ? [DURATION_PARAM] : [] };
+    })
   };
   const io = createSafeIO(SPICY_API_BASE, deps);
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -165,9 +209,9 @@ export function createSpicyApiAdapter(cfg: CustomProviderConfig, deps: SpicyDeps
       if (!cfg.models.includes(request.modelId) || !capabilitiesForModel(request.modelId).includes(request.capability)) {
         throw new ProviderError("invalid_request", "Unsupported model or capability.", true);
       }
-      const parsed = PARAMS.safeParse(request.parameters);
-      if (!parsed.success) throw new ProviderError("invalid_request", "Invalid parameters: only a prompt is supported for SpicyAPI.", true);
-      const wanted = request.capability === "image_to_image" ? 1 : 0;
+      const parsed = (isVideo(request.capability) ? VIDEO_PARAMS : PARAMS).safeParse(request.parameters);
+      if (!parsed.success) throw new ProviderError("invalid_request", "Invalid parameters for this model.", true);
+      const wanted = request.capability === "image_to_image" || request.capability === "image_to_video" ? 1 : 0;
       if (request.inputAssetIds.length !== wanted) {
         throw new ProviderError("invalid_request", wanted ? "Choose exactly one image to edit." : "This model does not accept input images.", true);
       }
@@ -188,13 +232,44 @@ export function createSpicyApiAdapter(cfg: CustomProviderConfig, deps: SpicyDeps
         : { amount: price, currency: "USD", isEstimate: true, notes: "Your own estimate; SpicyAPI's hold may differ." };
     },
 
+    /** One free read of a running task. Transient problems keep it "processing"; only a definite end throws. */
+    async getJobStatus(providerJobId, secret): Promise<ProviderJobResult> {
+      if (!/^job_[A-Za-z0-9]{6,64}$/.test(providerJobId)) throw new ProviderError("invalid_request", "Invalid task id.", true);
+      let res: Response;
+      try {
+        res = await io.call(`/jobs/recordInfo?taskId=${encodeURIComponent(providerJobId)}`, { method: "GET", headers: auth(secret) });
+      } catch {
+        return { providerJobId, status: "processing" };
+      }
+      if (res.status === 401 || res.status === 403) throw new ProviderError("auth", `SpicyAPI rejected the API key while collecting the result. Task ${providerJobId} may still be billed.`, false);
+      if (res.status === 404) throw new ProviderError("unavailable", `SpicyAPI does not know task ${providerJobId}.`, true);
+      if (!res.ok) return { providerJobId, status: "processing" };
+      const data = (await readEnvelope(res)).data ?? {};
+      if (data.state === "failed" || data.state === "expired") throw taskEndedError(data);
+      if (data.state !== "succeeded") return { providerJobId, status: "processing", progress: data.state === "running" ? 40 : 15 };
+      const url = (data.output as { assets?: { url?: unknown }[] } | undefined)?.assets?.[0]?.url;
+      if (typeof url !== "string") throw new ProviderError("unknown", `The task ${providerJobId} succeeded but returned no file link.`, false);
+      const bytes = await io.downloadFile(url, MAX_VIDEO_BYTES);
+      const contentType = sniffMime(bytes);
+      if (bytes.length === 0 || !contentType || !(VIDEO_TYPES.has(contentType) || IMAGE_TYPES.has(contentType))) {
+        throw new ProviderError("unknown", "SpicyAPI returned an unsupported file type.", false);
+      }
+      const cost = typeof data.cost === "string" ? Number(data.cost) : NaN;
+      return {
+        providerJobId, status: "validating", outputFiles: [{ contentType, data: bytes }],
+        ...(Number.isFinite(cost) ? { estimatedCost: { amount: cost, currency: "USD", isEstimate: true as const, notes: "Final charge reported by SpicyAPI." } } : {})
+      };
+    },
+
     async executeJob(request: ProviderJobRequest, idempotencyKey: string, context: ProviderExecutionContext): Promise<ProviderJobResult> {
-      const params = PARAMS.parse(request.parameters);
+      const video = isVideo(request.capability);
+      const params = (video ? VIDEO_PARAMS : PARAMS).parse(request.parameters) as { prompt: string; duration?: number };
       let input: Record<string, unknown> = { prompt: params.prompt };
-      if (request.capability === "image_to_image") {
+      if (request.capability === "image_to_image" || request.capability === "image_to_video" || request.capability === "text_to_video") {
+        const withImage = request.capability !== "text_to_video";
         const file = context.inputFiles[0];
-        if (!file) throw new ProviderError("invalid_request", "The image to edit is missing.", true);
-        if (file.data.length > MAX_EDIT_INPUT_BYTES) {
+        if (withImage && !file) throw new ProviderError("invalid_request", "The input image is missing.", true);
+        if (withImage && file.data.length > MAX_EDIT_INPUT_BYTES) {
           throw new ProviderError("invalid_request", "That image is too large to send (limit 3 MB). Use a smaller or compressed copy. Nothing was sent.", true);
         }
         // Reading the model's fields is free; do it before anything billable so a mismatch costs nothing.
@@ -202,7 +277,10 @@ export function createSpicyApiAdapter(cfg: CustomProviderConfig, deps: SpicyDeps
         const metaBody = await readEnvelope(meta);
         if (!meta.ok) throw mapCreateError(meta.status, metaBody.code, undefined);
         const schema = (metaBody.data as { inputSchema?: unknown } | undefined)?.inputSchema;
-        input = buildEditInput(schema, params.prompt, `data:${file.contentType};base64,${Buffer.from(file.data).toString("base64")}`);
+        input = buildInput(schema, {
+          prompt: params.prompt, ...(video && params.duration !== undefined ? { duration: params.duration } : {}),
+          ...(withImage ? { dataUri: `data:${file.contentType};base64,${Buffer.from(file.data).toString("base64")}` } : {})
+        });
       }
       // One attempt only. The idempotency key (derived from the job's) is for SpicyAPI's own replay protection.
       const res = await io.call("/jobs/createTask", {
@@ -217,13 +295,11 @@ export function createSpicyApiAdapter(cfg: CustomProviderConfig, deps: SpicyDeps
         throw new ProviderError("unknown", "SpicyAPI accepted the request but returned no task id. Check your SpicyAPI task history before retrying.", false);
       }
 
+      // Video takes minutes: hand the task id back and let the job runner collect the result later (getJobStatus).
+      if (video) return { providerJobId: taskId, status: "processing", progress: 15 };
+
       const done = await pollTask(taskId, context.secret);
-      if (done.state !== "succeeded") {
-        const code = done.errorCode;
-        if (code === "content_rejected") throw new ProviderError("content_policy", "SpicyAPI refused this prompt. It may have been charged; check the task history.", false);
-        // Failed and expired tasks normally release the hold.
-        throw new ProviderError(done.state === "expired" ? "timeout" : "unavailable", `SpicyAPI could not finish the task (${typeof code === "string" ? code : String(done.state)}). The hold is normally released.`, true);
-      }
+      if (done.state !== "succeeded") throw taskEndedError(done);
       const assets = (done.output as { assets?: { url?: unknown }[] } | undefined)?.assets;
       const url = assets?.[0]?.url;
       if (typeof url !== "string") throw new ProviderError("unknown", `The task ${taskId} succeeded but returned no image link.`, false);

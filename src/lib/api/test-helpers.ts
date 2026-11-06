@@ -30,7 +30,13 @@ export function jsonRequest(url: string, init: { token?: string; method?: string
 
 export const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52]);
 
+/** A minimal MP4 header (the sniffer only needs `ftyp`). */
+export const MP4 = Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32, 0, 0, 0, 0, 0x6d, 0x70, 0x34, 0x32]);
+
 export interface FakeAdapterOptions {
+  /** Present = the adapter can report on a running task (video). */
+  status?: (providerJobId: string, secret: string) => Promise<ProviderJobResult>;
+  videoModel?: boolean;
   estimate?: CostEstimate | null;
   submit?: (request: ProviderJobRequest, secret: string, inputs: number) => Promise<ProviderJobResult>;
   validCredential?: string;
@@ -45,7 +51,7 @@ export function fakeAdapter(options: FakeAdapterOptions = {}) {
       name: "Fake Provider",
       availableModels: [
         {
-          modelId: "m1", displayName: "M1", capabilities: ["text_to_image", "image_to_image"],
+          modelId: "m1", displayName: "M1", capabilities: options.videoModel ? ["text_to_image", "image_to_image", "text_to_video"] : ["text_to_image", "image_to_image"],
           parameters: [{ key: "size", label: "Size", default: "s", options: [{ value: "s", label: "Small" }] }]
         }
       ]
@@ -65,6 +71,7 @@ export function fakeAdapter(options: FakeAdapterOptions = {}) {
       return secret === (options.validCredential ?? "good-key") ? { valid: true } : { valid: false, message: "The provider rejected this API key." };
     },
     estimateCost: async () => options.estimate ?? null,
+    ...(options.status ? { getJobStatus: (id: string, secret: string) => options.status!(id, secret) } : {}),
     async executeJob(request, _key, ctx) {
       calls.submit++;
       if (options.submit) return options.submit(request, ctx.secret, ctx.inputFiles.length);
@@ -113,7 +120,7 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
         const existing = [...jobs.values()].find((j) => j.ownerId === job.ownerId && j.idempotencyKey === job.idempotencyKey);
         if (existing) return { job: existing, created: false };
         const record: JobRecord = {
-          ...job, id: `job${++seq}`, status: "queued", progress: null, errorCode: null, errorMessage: null, outputAssetIds: [],
+          ...job, id: `job${++seq}`, status: "queued", progress: null, errorCode: null, errorMessage: null, outputAssetIds: [], providerJobId: null,
           estimatedCost: job.estimatedCost ?? null, currency: job.currency ?? null, createdAt: "2026-01-01T00:00:00.000Z"
         };
         jobs.set(record.id, record);

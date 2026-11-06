@@ -81,7 +81,16 @@ catalog (the authenticated catalog is the only valid source). The model id's end
 (copies up to 3 MB are sent; the app reads the model's own input fields first and refuses, at no cost, when it needs fields
 it cannot fill). Give a model its own price by writing it after `=` in the model list, for example
 `alibaba/qwen-image-2.1-turbo/text-to-image=0.0144`; models without one use the provider's default cost (or ask for
-"price unknown" consent when that is empty). Video is not supported yet.
+"price unknown" consent when that is empty).
+
+**Video (SpicyAPI).** A model id ending in `/text-to-video` or `/image-to-video` appears when you choose **Video** in the
+Studio (with a start image attached it uses the image-to-video model). The app reads the model's input fields first and
+checks the length you chose; it then creates ONE task and saves SpicyAPI's task id. The video itself is collected whenever
+you look at the job (the Studio, or the Library, which refreshes running jobs every few seconds), so closing the page loses
+nothing and nothing is ever submitted twice. Notes: an accepted task cannot be cancelled; the price per clip is not known in
+advance (enter your own per-clip price as `model=price`, or confirm "price unknown"); videos are limited to 150 MB; the result
+is only collected while you (or a page of yours) look at it, so a finished clip may show up the next time you open the Library.
+Not supported: reference-video, video editing and face/head swap tools.
 - Create the key on SpicyAPI as a *Model API* key, restrict it to the image model(s) you use and **set a spend cap**: the app
   cannot know the price in advance, so every request asks for "price unknown" consent and the cap is your hard limit.
 - One `createTask` attempt per job (never retried). Waiting is bounded (~4 min); if it runs out, the task id is shown so you can

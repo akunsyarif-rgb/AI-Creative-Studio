@@ -16,6 +16,7 @@ export interface SafeIODeps {
 
 export const REQUEST_TIMEOUT_MS = 120_000;
 export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+export const MAX_VIDEO_BYTES = 150 * 1024 * 1024;
 const MAX_REDIRECTS = 2;
 
 export function mapStatus(status: number): ProviderError {
@@ -55,8 +56,8 @@ export function createSafeIO(baseUrl: string, deps: SafeIODeps = {}) {
     }
   }
 
-  /** Downloads an image URL returned by the provider. The API key is never sent. */
-  async function downloadImage(rawUrl: string): Promise<Uint8Array> {
+  /** Downloads a file link returned by the provider (image or video). The API key is never sent. */
+  async function downloadFile(rawUrl: string, maxBytes: number = MAX_IMAGE_BYTES): Promise<Uint8Array> {
     let current = rawUrl;
     let reason = "unknown";
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
@@ -71,7 +72,7 @@ export function createSafeIO(baseUrl: string, deps: SafeIODeps = {}) {
           continue;
         }
         if (!res.ok) { reason = `download answered HTTP ${res.status}`; break; }
-        return await readLimited(res, MAX_IMAGE_BYTES);
+        return await readLimited(res, maxBytes);
       } catch (error) {
         // Messages of these errors never contain the link itself (it is signed), only a generic reason.
         reason = error instanceof UnsafeUrlError ? error.message : "the download failed";
@@ -79,8 +80,8 @@ export function createSafeIO(baseUrl: string, deps: SafeIODeps = {}) {
       }
     }
     // The provider already generated (and may have billed) the image, so the outcome is not "known".
-    throw new ProviderError("unknown", `The provider returned an image link that could not be downloaded safely (${reason}).`, false);
+    throw new ProviderError("unknown", `The provider returned a file link that could not be downloaded safely (${reason}).`, false);
   }
 
-  return { call, downloadImage };
+  return { call, downloadFile, downloadImage: (rawUrl: string) => downloadFile(rawUrl, MAX_IMAGE_BYTES) };
 }

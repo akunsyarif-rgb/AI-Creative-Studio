@@ -10,7 +10,7 @@ import { adapterSupports, resolveAdapter } from "@/lib/providers/resolve";
 import type { Lookup } from "@/lib/net/public-url";
 import { ProviderError, type ProviderAdapter } from "@/lib/providers/types";
 import { credentialContext } from "@/lib/security/credential-context";
-import { executeJob } from "@/lib/jobs/execute";
+import { executeJob, reconcileJob, type ExecuteDeps } from "@/lib/jobs/execute";
 import { apiError, internalError, json, parseJson, unauthorized } from "./http";
 import { enforceRate, type RateLimiter } from "./rate-limit";
 
@@ -168,15 +168,7 @@ export async function postJob(request: Request, deps: ApiDeps): Promise<Response
     }
     // Only the request that created the job may execute it; duplicates never re-submit.
     if (created) {
-      deps.scheduler.run(() =>
-        executeJob(
-          {
-            jobs: deps.jobs, assets: deps.assets, keys: deps.keys, storage: deps.storage, vault: deps.vault,
-            resolveAdapter: (ownerId, providerId) => resolveAdapter(deps, ownerId, providerId)
-          },
-          job
-        )
-      );
+      deps.scheduler.run(() => executeJob(executeDepsOf(deps), job));
     }
     return json(created ? 202 : 200, { job: publicJob(job), duplicate: !created });
   } catch (error) {
@@ -184,12 +176,21 @@ export async function postJob(request: Request, deps: ApiDeps): Promise<Response
   }
 }
 
+function executeDepsOf(deps: ApiDeps): ExecuteDeps {
+  return {
+    jobs: deps.jobs, assets: deps.assets, keys: deps.keys, storage: deps.storage, vault: deps.vault,
+    resolveAdapter: (ownerId, providerId) => resolveAdapter(deps, ownerId, providerId)
+  };
+}
+
 export async function getJobById(request: Request, deps: ApiDeps, jobId: string): Promise<Response> {
   try {
     const user = await authenticate(request, deps.verifyToken);
     if (!user) return unauthorized();
     if (!id.safeParse(jobId).success) return apiError(404, "not_found", "Job not found.");
-    const job = await deps.jobs.getOwned(user.userId, jobId);
+    let job = await deps.jobs.getOwned(user.userId, jobId);
+    // A running long task (video) is collected here: looking at the job is what moves it forward. Read-only and free.
+    if (job?.status === "processing" && job.providerJobId) job = await reconcileJob(executeDepsOf(deps), job);
     return job ? json(200, { job: publicJob(job) }) : apiError(404, "not_found", "Job not found.");
   } catch (error) {
     return internalError(error);

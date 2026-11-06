@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { ApiError, downloadAsset, fetchJobsPage, getAssetUrl, isActive, type ApiClient, type JobView } from "@/lib/client/api";
+import { ApiError, downloadAsset, fetchJobsPage, getAsset, isActive, type ApiClient, type JobView } from "@/lib/client/api";
 import { useApi } from "@/lib/client/use-session";
 
 const STATUS_LABEL: Record<JobView["status"], string> = {
@@ -13,6 +13,7 @@ const STATUS_LABEL: Record<JobView["status"], string> = {
 function Thumb({ api, assetId, alt }: { api: ApiClient; assetId: string; alt: string }) {
   const box = useRef<HTMLDivElement>(null);
   const [url, setUrl] = useState<string | null>(null);
+  const [isVideo, setIsVideo] = useState(false);
   const [failed, setFailed] = useState(false);
   const retried = useRef(false);
   const requested = useRef(false);
@@ -23,7 +24,7 @@ function Thumb({ api, assetId, alt }: { api: ApiClient; assetId: string; alt: st
     const load = () => {
       if (requested.current) return;
       requested.current = true;
-      getAssetUrl(api, assetId).then(setUrl).catch(() => setFailed(true));
+      getAsset(api, assetId).then((a) => { setIsVideo(a.contentType.startsWith("video/")); setUrl(a.url); }).catch(() => setFailed(true));
     };
     if (typeof IntersectionObserver === "undefined") {
       load();
@@ -38,12 +39,14 @@ function Thumb({ api, assetId, alt }: { api: ApiClient; assetId: string; alt: st
     // Signed URLs live a few minutes; fetch a new one once before giving up.
     if (retried.current) return setFailed(true);
     retried.current = true;
-    getAssetUrl(api, assetId).then(setUrl).catch(() => setFailed(true));
+    getAsset(api, assetId).then((a) => { setIsVideo(a.contentType.startsWith("video/")); setUrl(a.url); }).catch(() => setFailed(true));
   }
 
   return (
     <div ref={box} className="thumb">
-      {failed ? <span className="muted small">Preview unavailable</span> : url ? (
+      {failed ? <span className="muted small">Preview unavailable</span> : url && isVideo ? (
+        <video src={url} controls playsInline preload="metadata" aria-label={alt} onError={onError} />
+      ) : url ? (
         // Short-lived signed URL from a private bucket; next/image optimisation does not apply.
         // eslint-disable-next-line @next/next/no-img-element
         <img src={url} alt={alt} loading="lazy" onError={onError} />
@@ -55,7 +58,7 @@ function Thumb({ api, assetId, alt }: { api: ApiClient; assetId: string; alt: st
 function JobCard({ api, job }: { api: ApiClient; job: JobView }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const label = job.prompt ? job.prompt.slice(0, 120) : "Generated image";
+  const label = job.prompt ? job.prompt.slice(0, 120) : "Generated item";
   const when = job.createdAt ? new Date(job.createdAt).toLocaleString() : "";
 
   async function save(assetId: string) {
@@ -75,14 +78,14 @@ function JobCard({ api, job }: { api: ApiClient; job: JobView }) {
       {job.status === "completed" && job.outputAssetIds.length > 0 ? (
         job.outputAssetIds.map((id) => (
           <div key={id} className="stack">
-            <Thumb api={api} assetId={id} alt={`Generated image: ${label}`} />
+            <Thumb api={api} assetId={id} alt={`Generated: ${label}`} />
             <button className="btn" type="button" disabled={busy} onClick={() => void save(id)}>{busy ? "Preparing…" : "Download"}</button>
           </div>
         ))
       ) : (
         <div className="thumb thumb-empty">
           {isActive(job) && <span className="spinner" aria-hidden="true" />}
-          <span className="muted small">{job.status === "failed" ? "No image" : STATUS_LABEL[job.status]}</span>
+          <span className="muted small">{job.status === "failed" ? "Nothing created" : STATUS_LABEL[job.status]}</span>
         </div>
       )}
       <div className="row-between">
@@ -142,6 +145,28 @@ export default function LibraryPage() {
 
   const anyActive = jobs?.some(isActive) ?? false;
 
+  // A running video is collected when it is looked at: re-read each running job every few seconds (read-only, free).
+  useEffect(() => {
+    if (!anyActive) return;
+    let live = true;
+    const timer = setInterval(async () => {
+      const running = (jobs ?? []).filter(isActive);
+      for (const j of running) {
+        try {
+          const { job } = await api.get<{ job: JobView }>(`/api/jobs/${j.id}`);
+          if (!live) return;
+          setJobs((cur) => (cur ?? []).map((c) => (c.id === job.id ? { ...c, ...job, prompt: c.prompt ?? job.prompt } : c)));
+        } catch {
+          /* try again on the next tick */
+        }
+      }
+    }, 8000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [api, anyActive, jobs]);
+
   return (
     <>
       <div className="row-between">
@@ -151,8 +176,8 @@ export default function LibraryPage() {
         </div>
         <button className="btn" type="button" onClick={() => setTick((n) => n + 1)}>Refresh</button>
       </div>
-      <p className="muted lead">Newest first. Images are private to you; previews use short-lived links.</p>
-      {anyActive && <p className="notice notice-warn small" role="status">Some jobs are still running. Press Refresh to update them.</p>}
+      <p className="muted lead">Newest first. Your creations are private to you; previews use short-lived links.</p>
+      {anyActive && <p className="notice notice-warn small" role="status">Some jobs are still running (videos take a few minutes). This page updates by itself.</p>}
       {error && <p className="notice notice-error" role="alert">{error}</p>}
       {jobs === null && <p className="muted" role="status">Loading…</p>}
       {jobs && jobs.length === 0 && !error && (

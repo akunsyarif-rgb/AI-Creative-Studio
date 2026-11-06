@@ -3,6 +3,8 @@ import { getJobById } from "@/lib/api/handlers";
 import { internalError } from "@/lib/api/http";
 
 export const dynamic = "force-dynamic";
+// Collecting a finished video downloads and stores the file inside this request.
+export const maxDuration = 300;
 
 export async function GET(request: Request, { params }: { params: Promise<{ jobId: string }> }) {
   try {

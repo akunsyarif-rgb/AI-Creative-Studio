@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { executeJob } from "./execute";
-import { PNG, createTestWorld, type TestWorld } from "@/lib/api/test-helpers";
+import { executeJob, reconcileJob } from "./execute";
+import { MP4, PNG, createTestWorld, type TestWorld } from "@/lib/api/test-helpers";
 import { ProviderError } from "@/lib/providers/types";
 import type { JobRecord } from "@/lib/data/repositories";
 
@@ -8,7 +8,7 @@ function run(w: TestWorld, overrides: Partial<JobRecord> = {}) {
   const job: JobRecord = {
     id: "job1", ownerId: "alice", projectId: "p1", capability: "text_to_image", providerId: "fake", modelId: "m1",
     status: "queued", inputAssetIds: [], parameters: { prompt: "a cat" }, idempotencyKey: "idem-0001", requestHash: "h",
-    progress: null, errorCode: null, errorMessage: null, outputAssetIds: [], estimatedCost: 0.05, currency: "USD", createdAt: "t",
+    progress: null, errorCode: null, errorMessage: null, outputAssetIds: [], providerJobId: null, estimatedCost: 0.05, currency: "USD", createdAt: "t",
     ...overrides
   };
   w.jobs.set(job.id, job);
@@ -133,5 +133,80 @@ describe("executeJob", () => {
     await exec();
     expect(get()).toMatchObject({ status: "failed", errorCode: "internal_error" });
     expect(get().errorMessage).toMatch(/may have been billed/);
+  });
+});
+
+describe("long-running (video) jobs", () => {
+  const tasks = (w: TestWorld) => ({ jobs: w.deps.jobs, assets: w.deps.assets, keys: w.deps.keys, storage: w.deps.storage, vault: w.deps.vault, resolveAdapter: async (_o: string, id: string) => w.deps.providers.get(id) });
+  const accepted = { status: "processing" as const, providerJobId: "job_abc123456", progress: 15 };
+  let n = 0;
+  const videoJob = () => ({ id: `vid${++n}`, capability: "text_to_video" as const });
+
+  it("saves the provider task id when a task is accepted and stops: no output yet, one submission", async () => {
+    const w = createTestWorld({ adapter: { videoModel: true, submit: async () => accepted } });
+    w.seedKey("alice", "fake", "k");
+    const { exec, get } = run(w, videoJob());
+    await exec();
+    expect(get()).toMatchObject({ status: "processing", providerJobId: "job_abc123456", progress: 15, outputAssetIds: [] });
+    expect(w.calls.submit).toBe(1);
+  });
+
+  it("fails clearly (outcome unknown) if a task was accepted without an id", async () => {
+    const w = createTestWorld({ adapter: { videoModel: true, submit: async () => ({ status: "processing" }) } });
+    w.seedKey("alice", "fake", "k");
+    const { exec, get } = run(w, videoJob());
+    await exec();
+    expect(get()).toMatchObject({ status: "failed", errorCode: "outcome_unknown" });
+  });
+
+  it("collects the finished file later: validates it, stores it, completes; later checks do nothing more", async () => {
+    let reads = 0;
+    const w = createTestWorld({ adapter: { videoModel: true, submit: async () => accepted, status: async (_id, secret) => { reads++; expect(secret).toBe("k"); return { status: "validating", providerJobId: "job_abc123456", outputFiles: [{ contentType: "video/mp4", data: MP4 }] }; } } });
+    w.seedKey("alice", "fake", "k");
+    const { exec, get } = run(w, videoJob());
+    await exec();
+    const done = await reconcileJob(tasks(w), get(), () => 10_000);
+    expect(done).toMatchObject({ status: "completed", progress: 100 });
+    expect(done.outputAssetIds).toHaveLength(1);
+    expect([...w.assets.values()].find((a) => a.id === done.outputAssetIds[0])).toMatchObject({ contentType: "video/mp4" });
+    expect(w.objects.size).toBe(1);
+    await reconcileJob(tasks(w), done, () => 20_000);
+    expect(reads).toBe(1);
+  });
+
+  it("keeps waiting while the provider says running, and rate-limits its own checks", async () => {
+    let reads = 0;
+    const w = createTestWorld({ adapter: { videoModel: true, submit: async () => accepted, status: async () => { reads++; return { status: "processing", providerJobId: "job_abc123456", progress: 40 }; } } });
+    w.seedKey("alice", "fake", "k");
+    const { exec, get } = run(w, videoJob());
+    await exec();
+    expect(await reconcileJob(tasks(w), get(), () => 100_000)).toMatchObject({ status: "processing", progress: 40 });
+    await reconcileJob(tasks(w), get(), () => 100_500); // too soon: no second read
+    expect(reads).toBe(1);
+    await reconcileJob(tasks(w), get(), () => 110_000);
+    expect(reads).toBe(2);
+  });
+
+  it("fails the job when the provider reports the task ended, with the outcome flag respected", async () => {
+    const w = createTestWorld({ adapter: { videoModel: true, submit: async () => accepted, status: async () => { throw new ProviderError("unavailable", "SpicyAPI could not finish the task (upstream_failed). The hold is normally released.", true); } } });
+    w.seedKey("alice", "fake", "k");
+    const { exec, get } = run(w, videoJob());
+    await exec();
+    expect(await reconcileJob(tasks(w), get(), () => 300_000)).toMatchObject({ status: "failed", errorCode: "provider_unavailable" });
+  });
+
+  it("rejects output that is not a real video before storing anything", async () => {
+    const w = createTestWorld({ adapter: { videoModel: true, submit: async () => accepted, status: async () => ({ status: "validating", providerJobId: "job_abc123456", outputFiles: [{ contentType: "video/mp4", data: PNG }] }) } });
+    w.seedKey("alice", "fake", "k");
+    const { exec, get } = run(w, videoJob());
+    await exec();
+    expect(await reconcileJob(tasks(w), get(), () => 400_000)).toMatchObject({ status: "failed", errorCode: "invalid_output" });
+    expect(w.objects.size).toBe(0);
+  });
+
+  it("ignores jobs that are not running a provider task", async () => {
+    const w = createTestWorld({ adapter: { videoModel: true, status: async () => { throw new Error("must not be called"); } } });
+    const queued = run(w, { id: "q1", status: "queued" }).job;
+    expect(await reconcileJob(tasks(w), queued, () => 500_000)).toBe(queued);
   });
 });

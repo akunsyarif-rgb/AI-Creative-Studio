@@ -210,3 +210,91 @@ describe("SpicyAPI image edit", () => {
     expect(big.calls).toHaveLength(0);
   });
 });
+
+describe("SpicyAPI video", () => {
+  const vcfg: CustomProviderConfig = { ...cfg, models: ["bytedance/seedance-2.5/text-to-video", "vendor/clip/image-to-video"] };
+  const TASK = "job_01k3m8x9q2z4v7n5p6r8s0t1w3";
+  const MP4 = Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32, 0, 0, 0, 0, 0x6d, 0x70, 0x34, 0x32]);
+  const vReq = (over: Record<string, unknown> = {}, modelId = "bytedance/seedance-2.5/text-to-video", cap: "text_to_video" | "image_to_video" = "text_to_video") =>
+    ({ capability: cap, modelId, inputAssetIds: cap === "image_to_video" ? ["a"] : [], parameters: { prompt: "waves", ...over } });
+  const schema = (props: Record<string, unknown>, required = ["prompt"]) => ({ type: "object", properties: props, required });
+
+  function vSetup(modelSchema: unknown, record: unknown = { state: "running" }, recordStatus = 200) {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      if (url.includes("/models/")) return env({ inputSchema: modelSchema });
+      if (url.endsWith("/jobs/createTask")) return env({ taskId: TASK, estimatedCost: "1.39" }, 202);
+      if (url.includes("recordInfo")) return Response.json({ code: recordStatus, data: record }, { status: recordStatus });
+      return new Response(MP4, { headers: { "content-type": "video/mp4" } });
+    }) as unknown as typeof fetch;
+    return { calls, adapter: createSpicyApiAdapter(vcfg, { fetch: fetchImpl, lookup: publicDns, sleep: async () => undefined, now: () => 0 }) };
+  }
+
+  it("infers video capabilities and offers a length option only on video models", () => {
+    expect(capabilitiesForModel("a/b/text-to-video")).toEqual(["text_to_video"]);
+    expect(capabilitiesForModel("a/b/image-to-video")).toEqual(["image_to_video"]);
+    const a = createSpicyApiAdapter(vcfg);
+    expect(a.config.availableModels[0].parameters?.[0]).toMatchObject({ key: "duration", default: "5" });
+  });
+
+  it("accepts the task and returns its id right away: one createTask, no waiting, no download", async () => {
+    const { adapter, calls } = vSetup(schema({ prompt: {}, duration_seconds: { type: "integer", minimum: 3, maximum: 10 } }));
+    const out = await adapter.executeJob(vReq({ duration: "5" }), "idem", { secret: "sk-spicy-SECRET", inputFiles: [] });
+    expect(out).toMatchObject({ status: "processing", providerJobId: TASK });
+    const create = calls.find((c) => c.url.endsWith("/jobs/createTask"))!;
+    expect(JSON.parse(create.init.body as string)).toEqual({ model: "bytedance/seedance-2.5/text-to-video", input: { prompt: "waves", duration_seconds: 5 } });
+    expect(calls.some((c) => c.url.includes("recordInfo"))).toBe(false);
+  });
+
+  it("refuses a length the model does not allow before anything billable", async () => {
+    const enumCase = vSetup(schema({ prompt: {}, duration_seconds: { enum: [4, 6] } }));
+    await expect(enumCase.adapter.executeJob(vReq({ duration: "5" }), "i", { secret: "k", inputFiles: [] })).rejects.toMatchObject({ message: expect.stringContaining("4, 6"), outcomeKnown: true });
+    const rangeCase = vSetup(schema({ prompt: {}, duration: { type: "integer", minimum: 6, maximum: 10 } }));
+    await expect(rangeCase.adapter.executeJob(vReq({ duration: "5" }), "i", { secret: "k", inputFiles: [] })).rejects.toMatchObject({ outcomeKnown: true });
+    for (const c of [enumCase.calls, rangeCase.calls]) expect(c.some((x) => x.url.endsWith("/jobs/createTask"))).toBe(false);
+  });
+
+  it("sends the input image for image-to-video and refuses models without an image field", async () => {
+    const ok = vSetup(schema({ prompt: {}, image_url: {} }));
+    const ctx2 = { secret: "k", inputFiles: [{ contentType: "image/png", data: PNG }] };
+    await ok.adapter.executeJob(vReq({}, "vendor/clip/image-to-video", "image_to_video"), "i", ctx2);
+    expect(JSON.parse(ok.calls.find((c) => c.url.endsWith("/jobs/createTask"))!.init.body as string).input.image_url).toMatch(/^data:image\/png;base64,/);
+    const none = vSetup(schema({ prompt: {} }));
+    await expect(none.adapter.executeJob(vReq({}, "vendor/clip/image-to-video", "image_to_video"), "i", ctx2)).rejects.toMatchObject({ outcomeKnown: true });
+    expect(none.calls.some((c) => c.url.endsWith("/jobs/createTask"))).toBe(false);
+  });
+
+  it("validates video requests", () => {
+    const { adapter } = vSetup({});
+    expect(() => adapter.validateRequest(vReq({ duration: "8" }))).not.toThrow();
+    expect(() => adapter.validateRequest(vReq({ duration: "99" }))).toThrow();
+    expect(() => adapter.validateRequest(vReq({ size: "x" }))).toThrow();
+    expect(() => adapter.validateRequest({ ...vReq({}, "vendor/clip/image-to-video", "image_to_video"), inputAssetIds: [] })).toThrow();
+    expect(() => adapter.validateRequest({ ...vReq(), modelId: "vendor/clip/image-to-video" })).toThrow();
+  });
+
+  it("reports a running task as processing, including on transient failures", async () => {
+    expect(await vSetup({}, { state: "queued" }).adapter.getJobStatus!(TASK, "k")).toMatchObject({ status: "processing" });
+    expect(await vSetup({}, { state: "running" }).adapter.getJobStatus!(TASK, "k")).toMatchObject({ status: "processing", progress: 40 });
+    expect(await vSetup({}, {}, 503).adapter.getJobStatus!(TASK, "k")).toMatchObject({ status: "processing" });
+    const flaky = createSpicyApiAdapter(vcfg, { fetch: (async () => { throw new Error("net"); }) as unknown as typeof fetch, lookup: publicDns });
+    expect(await flaky.getJobStatus!(TASK, "k")).toMatchObject({ status: "processing" });
+  });
+
+  it("downloads the finished video with a fresh link and without the key", async () => {
+    const { adapter, calls } = vSetup({}, { state: "succeeded", cost: "1.39", output: { assets: [{ url: "https://files.example.com/v.mp4?sig=abc" }] } });
+    const out = await adapter.getJobStatus!(TASK, "sk-spicy-SECRET");
+    expect(out).toMatchObject({ status: "validating", outputFiles: [{ contentType: "video/mp4" }], estimatedCost: { amount: 1.39 } });
+    expect(JSON.stringify(calls[calls.length - 1].init.headers ?? {})).not.toContain("SECRET");
+  });
+
+  it("ends the job for failed, expired, refused, unknown (404) and rejected-key tasks", async () => {
+    await expect(vSetup({}, { state: "failed", errorCode: "upstream_failed" }).adapter.getJobStatus!(TASK, "k")).rejects.toMatchObject({ code: "unavailable", outcomeKnown: true });
+    await expect(vSetup({}, { state: "expired" }).adapter.getJobStatus!(TASK, "k")).rejects.toMatchObject({ code: "timeout", outcomeKnown: true });
+    await expect(vSetup({}, { state: "failed", errorCode: "content_rejected" }).adapter.getJobStatus!(TASK, "k")).rejects.toMatchObject({ code: "content_policy", outcomeKnown: false });
+    await expect(vSetup({}, {}, 404).adapter.getJobStatus!(TASK, "k")).rejects.toMatchObject({ outcomeKnown: true });
+    await expect(vSetup({}, {}, 401).adapter.getJobStatus!(TASK, "k")).rejects.toMatchObject({ code: "auth", outcomeKnown: false });
+    await expect(vSetup({}).adapter.getJobStatus!("../x", "k")).rejects.toMatchObject({ code: "invalid_request" });
+  });
+});
