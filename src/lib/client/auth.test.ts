@@ -22,7 +22,7 @@ describe("authErrorMessage", () => {
 
   it("keeps the existing sign-up messages", () => {
     expect(authErrorMessage({ code: 409 }, "signup")).toMatch(/Try signing in instead/);
-    expect(authErrorMessage({ code: 400 }, "signup")).toMatch(/valid email/);
+    expect(authErrorMessage({ code: 400 }, "signup")).toMatch(/strong password/);
     expect(authErrorMessage({ code: 429 }, "signup")).toMatch(/Too many attempts/);
   });
 
@@ -31,5 +31,17 @@ describe("authErrorMessage", () => {
       "Something went wrong (Appwrite 500: general_server_error). Please try again."
     );
     expect(authErrorMessage({ code: 503 }, "signin")).toBe("Something went wrong (Appwrite 503). Please try again.");
+  });
+
+  it("shows Appwrite's own reason for a rejected sign-up (password policy, invalid email)", () => {
+    expect(
+      authErrorMessage({ code: 400, type: "password_dictionary", message: "Invalid `password` param: Password must not be one of the commonly used passwords." }, "signup")
+    ).toBe("The account could not be created: Invalid `password` param: Password must not be one of the commonly used passwords.");
+    expect(authErrorMessage({ code: 400, message: "Password must not contain your email or name." }, "signup")).toMatch(/not contain your email/);
+  });
+
+  it("ignores absurdly long or empty messages and never uses them for sign-in", () => {
+    expect(authErrorMessage({ code: 400, message: "x".repeat(500) }, "signup")).toMatch(/strong password/);
+    expect(authErrorMessage({ code: 400, message: "Password must not contain your email." }, "signin")).toBe("Email or password is incorrect.");
   });
 });

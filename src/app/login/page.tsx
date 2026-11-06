@@ -18,7 +18,9 @@ export default function LoginPage() {
     setError(null);
     setBusy(true);
     try {
-      await (mode === "signin" ? signIn(email, password) : signUp(email, password));
+      // Emails are case-insensitive; normalise so iPad auto-capitalisation cannot cause mismatches.
+      const normalised = email.trim().toLowerCase();
+      await (mode === "signin" ? signIn(normalised, password) : signUp(normalised, password));
       router.replace("/dashboard/studio");
     } catch (e) {
       setError(authErrorMessage(e, mode));
@@ -37,7 +39,7 @@ export default function LoginPage() {
         )}
         <label className="field">
           <span>Email</span>
-          <input type="email" inputMode="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input type="email" inputMode="email" autoComplete="email" autoCapitalize="none" autoCorrect="off" spellCheck={false} required value={email} onChange={(e) => setEmail(e.target.value)} />
         </label>
         <label className="field">
           <span>Password</span>
