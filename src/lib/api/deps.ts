@@ -5,6 +5,7 @@ import { adminTables, verifyAppwriteJwt } from "@/lib/appwrite/server";
 import { parseAllowlist, withAllowlist } from "@/lib/auth/allowlist";
 import { appwriteAssetsRepository, appwriteJobsRepository, appwriteKeysRepository } from "@/lib/data/appwrite-repositories";
 import { providerRegistry } from "@/lib/providers";
+import { createOpenAICompatibleAdapter } from "@/lib/providers/adapters/openai-compatible";
 import { decryptProviderCredential, encryptProviderCredential } from "@/lib/security/secrets";
 import { createR2Storage } from "@/lib/storage/r2";
 import type { ApiDeps } from "./handlers";
@@ -47,7 +48,8 @@ export function getApiDeps(): ApiDeps {
       accessKeyId: env.data.STORAGE_ACCESS_KEY_ID,
       secretAccessKey: env.data.STORAGE_SECRET_ACCESS_KEY
     }),
-    providers: providerRegistry
+    providers: providerRegistry,
+    buildCustomAdapter: (config) => createOpenAICompatibleAdapter(config)
   };
   return cached;
 }

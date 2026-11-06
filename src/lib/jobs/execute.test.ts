@@ -14,7 +14,7 @@ function run(w: TestWorld, overrides: Partial<JobRecord> = {}) {
   w.jobs.set(job.id, job);
   const exec = () =>
     executeJob(
-      { jobs: w.deps.jobs, assets: w.deps.assets, keys: w.deps.keys, storage: w.deps.storage, vault: w.deps.vault, providers: w.deps.providers },
+      { jobs: w.deps.jobs, assets: w.deps.assets, keys: w.deps.keys, storage: w.deps.storage, vault: w.deps.vault, resolveAdapter: async (_owner, id) => w.deps.providers.get(id) },
       job
     );
   return { job, exec, get: () => w.jobs.get(job.id)! };

@@ -106,6 +106,11 @@ export const TABLE_SPECS: TableSpec[] = [
       { type: "string", key: "ciphertext", size: 4096, required: true },
       { type: "string", key: "keyId", size: 16, required: true },
       { type: "string", key: "last4", size: 4, required: false },
+      // Non-secret settings of a user-defined OpenAI-compatible provider (all null for built-in providers).
+      { type: "string", key: "label", size: 64, required: false },
+      { type: "string", key: "baseUrl", size: 300, required: false },
+      { type: "text", key: "models", required: false },
+      { type: "float", key: "estimatedCostUsd", required: false, min: 0 },
       { type: "enum", key: "validationStatus", elements: ["unvalidated", "valid", "invalid"], required: true },
       { type: "datetime", key: "validatedAt", required: false }
     ],

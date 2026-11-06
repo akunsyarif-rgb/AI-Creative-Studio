@@ -110,6 +110,8 @@ export interface ProviderView {
   id: string;
   name: string;
   description: string | null;
+  /** True for providers the user defined themselves (OpenAI-compatible endpoints). */
+  custom?: boolean;
   models: ModelView[];
 }
 
@@ -156,3 +158,8 @@ export async function downloadAsset(api: ApiClient, assetId: string, navigate: (
 
 /** Jobs that are still running and worth re-checking. */
 export const isActive = (job: Pick<JobView, "status">) => !TERMINAL.has(job.status);
+
+/** Splits a free-form list of model ids (commas, spaces or new lines) into unique, trimmed entries. */
+export function parseModelList(text: string): string[] {
+  return [...new Set(text.split(/[\s,;]+/).map((m) => m.trim()).filter(Boolean))];
+}

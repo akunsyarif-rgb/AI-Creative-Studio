@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import type { ApiDeps } from "./handlers";
 import { createRateLimiter, type RateLimitRule } from "./rate-limit";
-import type { AssetRecord, JobPatch, JobRecord, KeyMetadata, NewJob } from "@/lib/data/repositories";
+import type { AssetRecord, CustomProviderConfig, JobPatch, JobRecord, KeyMetadata, NewJob } from "@/lib/data/repositories";
+import { createOpenAICompatibleAdapter } from "@/lib/providers/adapters/openai-compatible";
 import {
   ProviderError,
   type CostEstimate,
@@ -81,7 +82,9 @@ export interface TestWorld {
   objects: Map<string, { data: Uint8Array; contentType: string }>;
   tasks: (() => Promise<void>)[];
   runTasks(): Promise<void>;
-  seedKey(owner: string, provider: string, secret: string): void;
+  seedKey(owner: string, provider: string, secret: string, custom?: Omit<CustomProviderConfig, "providerId">): void;
+  /** The fetch used by custom (OpenAI-compatible) adapters built in this world. */
+  customFetch: { impl: typeof fetch };
   seedAsset(a: Partial<AssetRecord> & { id: string; ownerId: string }): AssetRecord;
   calls: { submit: number; validate: number };
 }
@@ -97,7 +100,9 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
   let seq = 0;
   const { adapter, calls } = fakeAdapter(opts.adapter);
   const kid = (o: string, p: string) => `${o}/${p}`;
-  const keyMeta = (r: KeyMetadata): KeyMetadata => ({ providerId: r.providerId, last4: r.last4, validationStatus: r.validationStatus, createdAt: r.createdAt, updatedAt: r.updatedAt });
+  const keyMeta = (r: KeyMetadata): KeyMetadata => ({ providerId: r.providerId, last4: r.last4, validationStatus: r.validationStatus, custom: r.custom, createdAt: r.createdAt, updatedAt: r.updatedAt });
+  const customFetch: { impl: typeof fetch } = { impl: (async () => new Response("{}", { status: 500 })) as unknown as typeof fetch };
+  const publicDns = async () => [{ address: "93.184.216.34" }];
 
   const base = createR2Storage({ endpoint: "https://acct.r2.cloudflarestorage.com", bucket: "b", accessKeyId: "AK", secretAccessKey: "SK" });
 
@@ -141,7 +146,10 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
     keys: {
       async create(i) {
         if (keys.has(kid(i.ownerId, i.providerId))) return null;
-        const row = { providerId: i.providerId, last4: i.last4, validationStatus: "unvalidated" as const, createdAt: "t0", updatedAt: "t0", ciphertext: i.ciphertext };
+        const row = {
+          providerId: i.providerId, last4: i.last4, validationStatus: "unvalidated" as const, createdAt: "t0", updatedAt: "t0", ciphertext: i.ciphertext,
+          custom: i.custom ? { providerId: i.providerId, ...i.custom } : null
+        };
         keys.set(kid(i.ownerId, i.providerId), row);
         return keyMeta(row);
       },
@@ -155,6 +163,8 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
       async getCiphertext(o, p) { return keys.get(kid(o, p))?.ciphertext ?? null; },
       async setValidation(o, p, status) { const r = keys.get(kid(o, p)); if (!r) return false; r.validationStatus = status; return true; },
       async list(o) { return [...keys.entries()].filter(([k]) => k.startsWith(`${o}/`)).map(([, r]) => keyMeta(r)); },
+      async getCustomConfig(o, p) { return keys.get(kid(o, p))?.custom ?? null; },
+      async listCustom(o) { return [...keys.entries()].filter(([k]) => k.startsWith(`${o}/`)).map(([, r]) => r.custom).filter((c): c is CustomProviderConfig => !!c); },
       async delete(o, p) { return keys.delete(kid(o, p)); }
     },
     storage: {
@@ -179,6 +189,8 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
       decrypt: async (c, ctx) => decryptWithKeyring(RING, c, ctx)
     },
     providers: createProviderRegistry([adapter]),
+    buildCustomAdapter: (config) => createOpenAICompatibleAdapter(config, { fetch: ((...a: Parameters<typeof fetch>) => customFetch.impl(...a)) as typeof fetch, lookup: publicDns }),
+    lookup: publicDns,
     limiter: createRateLimiter(opts.limits ?? { keys: { limit: 1000, windowSeconds: 60 }, uploads: { limit: 1000, windowSeconds: 60 }, providerTest: { limit: 1000, windowSeconds: 60 }, jobs: { limit: 1000, windowSeconds: 60 }, assetRead: { limit: 1000, windowSeconds: 60 } }),
     scheduler: { run: (t) => { tasks.push(t); } },
     maxJobCostUsd: opts.maxJobCostUsd ?? 1,
@@ -186,11 +198,14 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
   };
 
   const world: TestWorld = {
-    deps, jobs, assets, keys, objects, tasks, calls,
+    deps, jobs, assets, keys, objects, tasks, calls, customFetch,
     async runTasks() { while (tasks.length) await tasks.shift()!(); },
-    seedKey(owner, provider, secret) {
+    seedKey(owner, provider, secret, custom) {
       const ciphertext = encryptWithKeyring(RING, secret, `provider-credential:${owner}:${provider}`);
-      keys.set(kid(owner, provider), { providerId: provider, last4: null, validationStatus: "unvalidated", createdAt: "t0", updatedAt: "t0", ciphertext });
+      keys.set(kid(owner, provider), {
+        providerId: provider, last4: null, validationStatus: "unvalidated", createdAt: "t0", updatedAt: "t0", ciphertext,
+        custom: custom ? { providerId: provider, ...custom } : null
+      });
     },
     seedAsset(a) {
       const record: AssetRecord = { objectKey: `users/${a.ownerId}/123e4567-e89b-12d3-a456-4266141740${String(++seq).padStart(2, "0")}`, contentType: "image/png", size: PNG.length, status: "uploaded", ...a };

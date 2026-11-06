@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
-import { ApiError, type ProviderView } from "@/lib/client/api";
+import { ApiError, parseModelList, type ProviderView } from "@/lib/client/api";
 import { useApi } from "@/lib/client/use-session";
 
 interface KeyView {
@@ -22,6 +22,14 @@ export default function KeysPage() {
   const [editing, setEditing] = useState<string | null>(null);
   const [secret, setSecret] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+
+  // "Custom provider" form: any service that offers an OpenAI-style images API.
+  const [customOpen, setCustomOpen] = useState(false);
+  const [cName, setCName] = useState("");
+  const [cUrl, setCUrl] = useState("");
+  const [cModels, setCModels] = useState("");
+  const [cCost, setCCost] = useState("0.05");
+  const [cKey, setCKey] = useState("");
 
   const [reloadTick, setReloadTick] = useState(0);
   const reload = () => setReloadTick((n) => n + 1);
@@ -71,6 +79,20 @@ export default function KeysPage() {
     });
   }
 
+  function addCustom(event: FormEvent) {
+    event.preventDefault();
+    const apiKey = cKey.trim();
+    const models = parseModelList(cModels);
+    void run("custom-new", async () => {
+      await api.post("/api/keys", {
+        apiKey,
+        custom: { label: cName.trim(), baseUrl: cUrl.trim(), models, estimatedCostUsd: Number(cCost) }
+      });
+      setCName(""); setCUrl(""); setCModels(""); setCKey(""); setCustomOpen(false);
+      return "Custom provider saved (key encrypted). Test the key, then pick it in the Studio.";
+    }).finally(() => setCKey(""));
+  }
+
   return (
     <>
       <p className="eyebrow">PROVIDERS</p>
@@ -86,7 +108,7 @@ export default function KeysPage() {
           <section className="panel key-card" key={p.id} aria-labelledby={`k-${p.id}`}>
             <div className="row-between">
               <div>
-                <h2 id={`k-${p.id}`}>{p.name}</h2>
+                <h2 id={`k-${p.id}`}>{p.name}{p.custom && <span className="badge" style={{ marginLeft: 8 }}>Custom</span>}</h2>
                 {p.description && <p className="muted small">{p.description}</p>}
               </div>
               {key && <span className={`badge badge-${key.validationStatus}`}>{STATUS_LABEL[key.validationStatus]}</span>}
@@ -126,6 +148,61 @@ export default function KeysPage() {
           </section>
         );
       })}
+      {keys && providers && (
+        <section className="panel key-card" aria-labelledby="k-custom">
+          <div className="row-between">
+            <div>
+              <h2 id="k-custom">Use any other provider</h2>
+              <p className="muted small">
+                Works with any service that offers an OpenAI-style images API (<span className="mono">POST …/images/generations</span>),
+                such as Together, Fireworks, DeepInfra, Groq or your own gateway. Image generation only.
+              </p>
+            </div>
+            {!customOpen && <button className="btn" type="button" onClick={() => setCustomOpen(true)}>Add</button>}
+          </div>
+          {customOpen && (
+            <form onSubmit={addCustom} className="stack">
+              <label className="field">
+                <span>Name</span>
+                <input required minLength={2} maxLength={64} placeholder="Together AI" value={cName} onChange={(e) => setCName(e.target.value)} />
+              </label>
+              <label className="field">
+                <span>API address (base URL)</span>
+                <input
+                  required type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" spellCheck={false} maxLength={300}
+                  placeholder="https://api.together.xyz/v1" value={cUrl} onChange={(e) => setCUrl(e.target.value)}
+                />
+                <small className="muted">Must start with https://. Do not include /images/generations.</small>
+              </label>
+              <label className="field">
+                <span>Model name(s)</span>
+                <input
+                  required autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="black-forest-labs/FLUX.1-schnell"
+                  value={cModels} onChange={(e) => setCModels(e.target.value)}
+                />
+                <small className="muted">Exactly as the provider names them. Separate several with commas (up to 10).</small>
+              </label>
+              <label className="field">
+                <span>Your estimate of the cost per image (USD)</span>
+                <input required type="number" inputMode="decimal" min="0.0001" max="100" step="any" value={cCost} onChange={(e) => setCCost(e.target.value)} />
+                <small className="muted">Used to ask for your confirmation before each paid request and to enforce the spend limit. Check the provider&apos;s pricing.</small>
+              </label>
+              <label className="field">
+                <span>API key</span>
+                <input
+                  type="password" name="custom-secret" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                  required minLength={8} maxLength={2000} value={cKey} onChange={(e) => setCKey(e.target.value)}
+                />
+              </label>
+              <p className="notice notice-warn small">This key is sent to the address above with every request. Only enter addresses you trust, and double-check the spelling.</p>
+              <div className="actions">
+                <button className="btn btn-primary" type="submit" disabled={busy === "custom-new"}>{busy === "custom-new" ? "Saving…" : "Save provider"}</button>
+                <button className="btn" type="button" onClick={() => { setCustomOpen(false); setCKey(""); }}>Cancel</button>
+              </div>
+            </form>
+          )}
+        </section>
+      )}
       <p className="muted small"><Link href="/dashboard/studio">Go to the Studio →</Link></p>
     </>
   );

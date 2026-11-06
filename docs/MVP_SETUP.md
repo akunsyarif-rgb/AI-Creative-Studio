@@ -57,6 +57,20 @@ accepted, that the response is `data[0].b64_json`, and that `/auth/key` validate
 fails safely with a 4xx ("The provider rejected the request", nothing billed). Prices in the adapter are
 rough placeholders.
 
+## Custom providers (any OpenAI-compatible API)
+On **API keys → Use any other provider** you can add a service you choose: a name, its https base URL (for example
+`https://api.together.xyz/v1`), the model name(s) as that provider spells them, your own per-image cost estimate, and the key.
+The app calls `POST {baseUrl}/images/generations` (and `GET {baseUrl}/models` for **Test key**) and accepts either
+`b64_json` or an image `url` in the answer. Image generation only; providers with a different API style need a dedicated
+adapter (see below).
+- The base URL is user-supplied, so it is restricted: https only, no credentials/query/odd ports, and the host must resolve
+  to public addresses (checked when saving and again before every request). Redirects are refused for API calls; image
+  links in answers are fetched only from public https hosts (max 2 re-validated redirects, 25 MB), and your key is never
+  sent to those image hosts. Residual risk: DNS could change between the check and the request.
+- The cost estimate you enter drives the confirmation prompt and the `MAX_JOB_COST_USD` ceiling; an unknown price is never "free".
+- The key and base URL settings are stored per user; the key itself is encrypted like every other key.
+- New columns (`label`, `baseUrl`, `models`, `estimatedCostUsd`) were added to `studio_keys`: re-run **Appwrite setup** once.
+
 ## Adding a provider
 Providers are plugged in through the registry; core execution code never changes.
 1. Copy `src/lib/providers/adapters/_template.ts` to `adapters/<provider>.ts` and implement it

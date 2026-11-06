@@ -77,21 +77,41 @@ export interface AssetsRepository {
   setStatus(id: string, status: AssetRecord["status"]): Promise<void>;
 }
 
+/** A user-defined provider that speaks the OpenAI images API (`POST {baseUrl}/images/generations`). */
+export interface CustomProviderConfig {
+  /** Always `custom-<slug>`. */
+  providerId: string;
+  label: string;
+  /** https base URL, e.g. https://api.example.com/v1 (no trailing slash). */
+  baseUrl: string;
+  models: string[];
+  /** The user's own per-image cost estimate, used for the cost confirmation gate. */
+  estimatedCostUsd: number;
+}
+
 /** Public metadata only. Ciphertext never leaves the repository layer except via `getCiphertext`. */
 export interface KeyMetadata {
   providerId: string;
   last4: string | null;
   validationStatus: "unvalidated" | "valid" | "invalid";
+  /** Present only for user-defined providers. */
+  custom: CustomProviderConfig | null;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface KeysRepository {
   /** Atomic; returns null if a key for this provider already exists. */
-  create(input: { ownerId: string; providerId: string; ciphertext: string; keyId: string; last4: string | null }): Promise<KeyMetadata | null>;
+  create(input: {
+    ownerId: string; providerId: string; ciphertext: string; keyId: string; last4: string | null;
+    custom?: Omit<CustomProviderConfig, "providerId">;
+  }): Promise<KeyMetadata | null>;
   /** Returns null if no key exists. */
   replace(input: { ownerId: string; providerId: string; ciphertext: string; keyId: string; last4: string | null }): Promise<KeyMetadata | null>;
   get(ownerId: string, providerId: string): Promise<KeyMetadata | null>;
+  /** The non-secret settings of one of the owner's custom providers, or null. */
+  getCustomConfig(ownerId: string, providerId: string): Promise<CustomProviderConfig | null>;
+  listCustom(ownerId: string): Promise<CustomProviderConfig[]>;
   /** Only for server-side execution: returns the encrypted secret. Never expose in responses. */
   getCiphertext(ownerId: string, providerId: string): Promise<string | null>;
   setValidation(ownerId: string, providerId: string, status: "valid" | "invalid"): Promise<boolean>;

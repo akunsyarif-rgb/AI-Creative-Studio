@@ -133,3 +133,43 @@ describe("keys repository", () => {
     expect(await repo.delete("alice", "openai")).toBe(false);
   });
 });
+
+describe("keys repository: custom providers", () => {
+  const secret = { ownerId: "alice", providerId: "custom-acme", ciphertext: "bk1.k1.aaa.bbb.ccc", keyId: "k1", last4: "1234" };
+  const custom = { label: "Acme", baseUrl: "https://api.acme.example/v1", models: ["m1", "m2"], estimatedCostUsd: 0.05 };
+
+  it("stores and returns the non-secret settings, never the ciphertext", async () => {
+    const { ctx, rows } = await setup();
+    const repo = appwriteKeysRepository(ctx);
+    const meta = await repo.create({ ...secret, custom });
+    expect(meta?.custom).toEqual({ providerId: "custom-acme", ...custom });
+    expect(rows("keys").size).toBe(1);
+    expect((await repo.get("alice", "custom-acme"))?.custom).toMatchObject({ models: ["m1", "m2"], estimatedCostUsd: 0.05 });
+    expect(await repo.getCustomConfig("alice", "custom-acme")).toEqual({ providerId: "custom-acme", ...custom });
+    expect(await repo.listCustom("alice")).toEqual([{ providerId: "custom-acme", ...custom }]);
+    for (const out of [await repo.get("alice", "custom-acme"), await repo.getCustomConfig("alice", "custom-acme"), await repo.listCustom("alice")]) {
+      expect(JSON.stringify(out)).not.toContain("bk1.");
+    }
+  });
+
+  it("returns null/empty for built-in keys, other owners and missing rows", async () => {
+    const { ctx } = await setup();
+    const repo = appwriteKeysRepository(ctx);
+    await repo.create({ ...secret, providerId: "openai" });
+    await repo.create({ ...secret, custom });
+    expect((await repo.get("alice", "openai"))?.custom).toBeNull();
+    expect(await repo.getCustomConfig("alice", "openai")).toBeNull();
+    expect(await repo.getCustomConfig("bob", "custom-acme")).toBeNull();
+    expect(await repo.getCustomConfig("alice", "custom-missing")).toBeNull();
+    expect((await repo.listCustom("alice")).map((c) => c.providerId)).toEqual(["custom-acme"]);
+    expect(await repo.listCustom("bob")).toEqual([]);
+  });
+
+  it("survives a corrupt models column without throwing", async () => {
+    const { ctx, rows } = await setup();
+    const repo = appwriteKeysRepository(ctx);
+    await repo.create({ ...secret, custom });
+    [...rows("keys").values()][0].models = "{not json";
+    expect((await repo.getCustomConfig("alice", "custom-acme"))?.models).toEqual([]);
+  });
+});

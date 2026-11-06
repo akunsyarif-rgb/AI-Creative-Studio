@@ -16,7 +16,7 @@ describe("GET /api/providers", () => {
     const body = await (await get(w)).json();
     expect(body.providers).toEqual([
       {
-        id: "fake", name: "Fake Provider", description: null,
+        id: "fake", name: "Fake Provider", description: null, custom: false,
         models: [{
           modelId: "m1", displayName: "M1", capabilities: ["text_to_image", "image_to_image"], isFreeTier: false,
           parameters: [{ key: "size", label: "Size", default: "s", options: [{ value: "s", label: "Small" }] }]
