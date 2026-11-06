@@ -167,7 +167,7 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
       async updateCustom(i) {
         const row = keys.get(kid(i.ownerId, i.providerId));
         if (!row?.custom) return null;
-        row.custom = { ...row.custom, models: i.models, estimatedCostUsd: i.estimatedCostUsd };
+        row.custom = { ...row.custom, models: i.models, estimatedCostUsd: i.estimatedCostUsd, modelPrices: i.modelPrices ?? {} };
         return keyMeta(row);
       },
       async listCustom(o) { return [...keys.entries()].filter(([k]) => k.startsWith(`${o}/`)).map(([, r]) => r.custom).filter((c): c is CustomProviderConfig => !!c); },

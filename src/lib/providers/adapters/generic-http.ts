@@ -3,6 +3,7 @@ import { readLimited } from "@/lib/net/public-url";
 import type { CustomProviderConfig, HttpTemplate } from "@/lib/data/repositories";
 import { sniffMime } from "@/lib/storage/sniff";
 import { MAX_IMAGE_BYTES, createSafeIO, mapStatus, type SafeIODeps } from "./safe-io";
+import { userPriceFor } from "../pricing";
 import {
   ProviderError,
   type CostEstimate,
@@ -213,10 +214,11 @@ export function createGenericHttpAdapter(cfg: CustomProviderConfig & { http: Htt
       throw mapStatus(res.status);
     },
 
-    async estimateCost(): Promise<CostEstimate | null> {
-      return cfg.estimatedCostUsd === null
+    async estimateCost(request?: ProviderJobRequest): Promise<CostEstimate | null> {
+      const price = userPriceFor(cfg, request?.modelId);
+      return price === null
         ? { amount: null, currency: "USD", isEstimate: true, notes: "The price is unknown. The provider will charge its own price to your account." }
-        : { amount: cfg.estimatedCostUsd, currency: "USD", isEstimate: true, notes: "Your own estimate for this provider; actual billing may differ." };
+        : { amount: price, currency: "USD", isEstimate: true, notes: "Your own estimate for this provider; actual billing may differ." };
     },
 
     async executeJob(request: ProviderJobRequest, _idempotencyKey: string, context: ProviderExecutionContext): Promise<ProviderJobResult> {

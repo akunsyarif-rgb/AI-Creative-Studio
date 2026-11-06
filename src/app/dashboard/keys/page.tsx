@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
-import { ApiError, parseModelList, type ProviderView } from "@/lib/client/api";
+import { ApiError, formatModelEntries, parseModelEntries, type ProviderView } from "@/lib/client/api";
 import { useApi } from "@/lib/client/use-session";
 
 interface KeyView {
@@ -10,7 +10,7 @@ interface KeyView {
   masked: string;
   validationStatus: "unvalidated" | "valid" | "invalid";
   updatedAt: string;
-  custom?: { estimatedCostUsd: number | null } | null;
+  custom?: { estimatedCostUsd: number | null; models?: string[]; modelPrices?: Record<string, number> } | null;
 }
 
 const STATUS_LABEL = { unvalidated: "Not tested", valid: "Valid", invalid: "Rejected" } as const;
@@ -95,9 +95,10 @@ export default function KeysPage() {
 
   function saveCustomEdit(event: FormEvent, providerId: string) {
     event.preventDefault();
-    const models = parseModelList(eModels);
+    const { models, prices, error } = parseModelEntries(eModels);
+    if (error) { setMessage({ kind: "error", text: error }); return; }
     void run(providerId, async () => {
-      await api.patch(`/api/keys/${providerId}`, { models, estimatedCostUsd: eCost.trim() ? Number(eCost) : null });
+      await api.patch(`/api/keys/${providerId}`, { models, modelPrices: prices, estimatedCostUsd: eCost.trim() ? Number(eCost) : null });
       setEditCfg(null);
       return "Provider updated. Your saved key was not changed.";
     });
@@ -106,12 +107,13 @@ export default function KeysPage() {
   function addCustom(event: FormEvent) {
     event.preventDefault();
     const apiKey = cKey.trim();
-    const models = parseModelList(cModels);
+    const { models, prices, error } = parseModelEntries(cModels);
+    if (error) { setMessage({ kind: "error", text: error }); return; }
     void run("custom-new", async () => {
       await api.post("/api/keys", {
         apiKey,
         custom: {
-          label: cName.trim(), baseUrl: cUrl.trim(), models, ...(cCost.trim() ? { estimatedCostUsd: Number(cCost) } : {}),
+          label: cName.trim(), baseUrl: cUrl.trim(), models, ...(Object.keys(prices).length ? { modelPrices: prices } : {}), ...(cCost.trim() ? { estimatedCostUsd: Number(cCost) } : {}),
           ...(cStyle === "http"
             ? {
                 http: {
@@ -169,10 +171,10 @@ export default function KeysPage() {
                 <label className="field">
                   <span>Model name(s)</span>
                   <input required autoCapitalize="none" autoCorrect="off" spellCheck={false} value={eModels} onChange={(e) => setEModels(e.target.value)} />
-                  <small className="muted">Exactly as the provider names them. Separate several with commas (up to 10).</small>
+                  <small className="muted">Exactly as the provider names them. Separate several with commas (up to 10). To give one model its own price, write it after = , for example model-id=0.0144 (USD per image).</small>
                 </label>
                 <label className="field">
-                  <span>Cost per image in USD (optional)</span>
+                  <span>Default cost per image in USD (optional)</span>
                   <input type="number" inputMode="decimal" step="any" min="0.0001" max="100" placeholder="Leave empty if unknown" value={eCost} onChange={(e) => setECost(e.target.value)} />
                 </label>
                 <p className="muted small">The address and your saved key stay the same.</p>
@@ -193,7 +195,7 @@ export default function KeysPage() {
                 </button>
                 {p.custom && (
                   <button className="btn" type="button"
-                    onClick={() => { setEditCfg(p.id); setEModels(p.models.map((m) => m.modelId).join(", ")); setECost(key.custom?.estimatedCostUsd ? String(key.custom.estimatedCostUsd) : ""); }}>
+                    onClick={() => { setEditCfg(p.id); setEModels(formatModelEntries(p.models.map((m) => m.modelId), key.custom?.modelPrices)); setECost(key.custom?.estimatedCostUsd ? String(key.custom.estimatedCostUsd) : ""); }}>
                     Edit
                   </button>
                 )}
@@ -247,7 +249,7 @@ export default function KeysPage() {
                   required autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="black-forest-labs/FLUX.1-schnell"
                   value={cModels} onChange={(e) => setCModels(e.target.value)}
                 />
-                <small className="muted">Exactly as the provider names them. Separate several with commas (up to 10). {cStyle === "http" ? "If the provider has no model names, enter any label." : ""}</small>
+                <small className="muted">Exactly as the provider names them. Separate several with commas (up to 10). Optional own price per model: model-id=0.0144. {cStyle === "http" ? "If the provider has no model names, enter any label." : ""}</small>
               </label>
               {cStyle === "http" && (
                 <div className="stack">
@@ -308,7 +310,7 @@ export default function KeysPage() {
                 </div>
               )}
               <label className="field">
-                <span>Cost per image in USD (optional)</span>
+                <span>Default cost per image in USD (optional)</span>
                 <input type="number" inputMode="decimal" min="0.0001" max="100" step="any" placeholder="Leave empty if unknown" value={cCost} onChange={(e) => setCCost(e.target.value)} />
                 <small className="muted">
                   If you leave this empty, each request asks for your confirmation with a &quot;price unknown&quot; notice, and the spend limit

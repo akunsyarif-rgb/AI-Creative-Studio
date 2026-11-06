@@ -128,15 +128,34 @@ type KeyRow = Models.Row & {
 /** Non-secret columns only: ciphertext is never selected by metadata reads. */
 const META_COLUMNS = ["providerId", "last4", "validationStatus", "label", "baseUrl", "models", "estimatedCostUsd", "httpConfig"];
 
+/**
+ * The `models` column holds a JSON array of ids, or `{ids, prices}` when per-model prices exist (no schema change;
+ * older rows stay readable and rows without prices stay a plain array).
+ */
+export function encodeModels(models: string[], prices: Record<string, number> | undefined): string {
+  const entries = Object.entries(prices ?? {}).filter(([id]) => models.includes(id));
+  return JSON.stringify(entries.length ? { ids: models, prices: Object.fromEntries(entries) } : models);
+}
+
+export function decodeModels(raw: string | null | undefined): { models: string[]; prices: Record<string, number> } {
+  try {
+    const parsed = JSON.parse(raw ?? "[]") as unknown;
+    const ids = Array.isArray(parsed) ? parsed : (parsed as { ids?: unknown })?.ids;
+    const models = Array.isArray(ids) ? ids.filter((m): m is string => typeof m === "string") : [];
+    const rawPrices = !Array.isArray(parsed) ? (parsed as { prices?: unknown })?.prices : undefined;
+    const prices: Record<string, number> = {};
+    if (rawPrices && typeof rawPrices === "object") {
+      for (const [id, v] of Object.entries(rawPrices)) if (models.includes(id) && typeof v === "number" && Number.isFinite(v) && v > 0) prices[id] = v;
+    }
+    return { models, prices };
+  } catch {
+    return { models: [], prices: {} };
+  }
+}
+
 function toCustom(d: KeyRow): CustomProviderConfig | null {
   if (!d.baseUrl) return null;
-  let models: string[] = [];
-  try {
-    const parsed = JSON.parse(d.models ?? "[]");
-    models = Array.isArray(parsed) ? parsed.filter((m): m is string => typeof m === "string") : [];
-  } catch {
-    models = [];
-  }
+  const { models, prices } = decodeModels(d.models);
   let http: HttpTemplate | null = null;
   if (d.httpConfig) {
     try {
@@ -151,7 +170,7 @@ function toCustom(d: KeyRow): CustomProviderConfig | null {
       http = null;
     }
   }
-  return { providerId: d.providerId, label: d.label ?? d.providerId, baseUrl: d.baseUrl, models, estimatedCostUsd: d.estimatedCostUsd ?? null, http };
+  return { providerId: d.providerId, label: d.label ?? d.providerId, baseUrl: d.baseUrl, models, estimatedCostUsd: d.estimatedCostUsd ?? null, ...(Object.keys(prices).length ? { modelPrices: prices } : {}), http };
 }
 
 const toKeyMeta = (d: KeyRow): KeyMetadata => ({
@@ -172,7 +191,7 @@ export function appwriteKeysRepository({ tables, databaseId }: RepoContext): Key
           databaseId, tableId, rowId: idFor(ownerId, providerId),
           data: {
             ownerId, providerId, ...secret, validationStatus: "unvalidated",
-            ...(custom ? { label: custom.label, baseUrl: custom.baseUrl, models: JSON.stringify(custom.models), ...(custom.estimatedCostUsd === null ? {} : { estimatedCostUsd: custom.estimatedCostUsd }), ...(custom.http ? { httpConfig: JSON.stringify(custom.http) } : {}) } : {})
+            ...(custom ? { label: custom.label, baseUrl: custom.baseUrl, models: encodeModels(custom.models, custom.modelPrices), ...(custom.estimatedCostUsd === null ? {} : { estimatedCostUsd: custom.estimatedCostUsd }), ...(custom.http ? { httpConfig: JSON.stringify(custom.http) } : {}) } : {})
           },
           permissions: rowPermissions("keys", ownerId)
         });
@@ -218,13 +237,13 @@ export function appwriteKeysRepository({ tables, databaseId }: RepoContext): Key
         throw error;
       }
     },
-    async updateCustom({ ownerId, providerId, models, estimatedCostUsd }) {
+    async updateCustom({ ownerId, providerId, models, estimatedCostUsd, modelPrices }) {
       // Only an existing custom row of this owner (owner-derived id) can be changed.
       if (!(await this.getCustomConfig(ownerId, providerId))) return null;
       try {
         const doc = await tables.updateRow<KeyRow>({
           databaseId, tableId, rowId: idFor(ownerId, providerId),
-          data: { models: JSON.stringify(models), estimatedCostUsd }
+          data: { models: encodeModels(models, modelPrices), estimatedCostUsd }
         });
         return toKeyMeta(doc);
       } catch (error) {

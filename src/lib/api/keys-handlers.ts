@@ -26,6 +26,11 @@ const modelId = z
   .refine((m) => !m.includes("://"), "Enter the model id (as listed in the provider's catalog), not a web address")
   .refine((m) => !m.split("/").some((seg) => seg === ".." || seg === "."), "Invalid model id");
 
+const modelPrice = z.number().min(0.0001).max(100);
+/** Prices may only be given for models that are in the list. */
+const pricesFitModels = (v: { models: string[]; modelPrices?: Record<string, number> }) =>
+  Object.keys(v.modelPrices ?? {}).every((id) => v.models.includes(id));
+
 /** Settings of a user-defined OpenAI-compatible provider. */
 const customSchema = z.object({
   label: z.string().trim().min(2).max(64),
@@ -33,6 +38,8 @@ const customSchema = z.object({
   models: z.array(modelId).min(1).max(10),
   /** Optional per-image price guess. Without it every request asks for consent with an "unknown price" notice. */
   estimatedCostUsd: z.number().min(0.0001).max(100).optional(),
+  /** Optional per-model prices (USD per image); other models use `estimatedCostUsd`. */
+  modelPrices: z.record(modelId, modelPrice).optional(),
   /** Present for a "custom HTTP" provider; absent for an OpenAI-compatible one. */
   http: httpTemplateSchema.optional()
 });
@@ -41,6 +48,7 @@ export const createKeySchema = z
   .object({ providerId: providerId.optional(), apiKey, custom: customSchema.optional() })
   .superRefine((v, ctx) => {
     if (v.custom && v.providerId) ctx.addIssue({ code: "custom", path: ["providerId"], message: "Do not send providerId for a custom provider" });
+    if (v.custom && !pricesFitModels(v.custom)) ctx.addIssue({ code: "custom", path: ["custom", "modelPrices"], message: "Prices can only be set for listed models" });
     if (!v.custom && !v.providerId) ctx.addIssue({ code: "custom", path: ["providerId"], message: "providerId is required" });
     if (!v.custom && v.providerId?.startsWith(CUSTOM_PREFIX)) ctx.addIssue({ code: "custom", path: ["providerId"], message: "Reserved prefix" });
   });
@@ -55,18 +63,19 @@ export const updateKeySchema = z.object({ apiKey });
 /** Editing a custom provider changes only what it offers and costs, never where the key is sent. */
 export const updateCustomSchema = z.object({
   models: z.array(modelId).min(1).max(10),
-  estimatedCostUsd: z.number().min(0.0001).max(100).nullable()
-}).strict();
+  estimatedCostUsd: z.number().min(0.0001).max(100).nullable(),
+  modelPrices: z.record(modelId, modelPrice).default({})
+}).strict().refine(pricesFitModels, { path: ["modelPrices"], message: "Prices can only be set for listed models" });
 
 /** Reveal at most 4 trailing characters, and only when that is a small fraction of the key. */
 export function maskLast4(secret: string): string | null {
   return secret.length >= 16 ? secret.slice(-4) : null;
 }
 
-function publicKey(meta: { providerId: string; last4: string | null; validationStatus: string; createdAt: string; updatedAt: string; custom: { label: string; baseUrl: string; models: string[]; estimatedCostUsd: number | null; http?: HttpTemplate | null } | null }) {
+function publicKey(meta: { providerId: string; last4: string | null; validationStatus: string; createdAt: string; updatedAt: string; custom: { label: string; baseUrl: string; models: string[]; estimatedCostUsd: number | null; modelPrices?: Record<string, number>; http?: HttpTemplate | null } | null }) {
   return {
     providerId: meta.providerId,
-    custom: meta.custom ? { label: meta.custom.label, baseUrl: meta.custom.baseUrl, models: meta.custom.models, estimatedCostUsd: meta.custom.estimatedCostUsd, http: meta.custom.http ?? null } : null,
+    custom: meta.custom ? { label: meta.custom.label, baseUrl: meta.custom.baseUrl, models: meta.custom.models, estimatedCostUsd: meta.custom.estimatedCostUsd, modelPrices: meta.custom.modelPrices ?? {}, http: meta.custom.http ?? null } : null,
     masked: meta.last4 ? `••••${meta.last4}` : "••••",
     validationStatus: meta.validationStatus,
     createdAt: meta.createdAt,
@@ -89,7 +98,7 @@ export async function postKey(request: Request, deps: ApiDeps): Promise<Response
     if (!body.ok) return body.response;
     const { apiKey: secret, custom } = body.data;
     let provider = body.data.providerId as string;
-    let customConfig: { label: string; baseUrl: string; models: string[]; estimatedCostUsd: number | null; http: HttpTemplate | null } | undefined;
+    let customConfig: { label: string; baseUrl: string; models: string[]; estimatedCostUsd: number | null; modelPrices: Record<string, number>; http: HttpTemplate | null } | undefined;
     if (custom) {
       const id = customProviderId(custom.label);
       if (!id) return apiError(422, "validation_failed", "Choose a name with at least two letters or digits.");
@@ -101,7 +110,7 @@ export async function postKey(request: Request, deps: ApiDeps): Promise<Response
         throw error;
       }
       provider = id;
-      customConfig = { label: custom.label, baseUrl: url.href.replace(/\/$/, ""), models: [...new Set(custom.models)], estimatedCostUsd: custom.estimatedCostUsd ?? null, http: custom.http ? normaliseHttpTemplate(custom.http) : null };
+      customConfig = { label: custom.label, baseUrl: url.href.replace(/\/$/, ""), models: [...new Set(custom.models)], estimatedCostUsd: custom.estimatedCostUsd ?? null, modelPrices: custom.modelPrices ?? {}, http: custom.http ? normaliseHttpTemplate(custom.http) : null };
     }
     const sealed = await seal(deps, user.userId, provider, secret);
     const meta = await deps.keys.create({ ownerId: user.userId, providerId: provider, ...sealed, ...(customConfig ? { custom: customConfig } : {}) });
@@ -166,7 +175,7 @@ export async function patchKey(request: Request, deps: ApiDeps, provider: string
     if (!providerId.safeParse(provider).success || !provider.startsWith(CUSTOM_PREFIX)) return apiError(404, "not_found", "Custom provider not found.");
     const body = await parseJson(request, updateCustomSchema);
     if (!body.ok) return body.response;
-    const meta = await deps.keys.updateCustom({ ownerId: user.userId, providerId: provider, models: [...new Set(body.data.models)], estimatedCostUsd: body.data.estimatedCostUsd });
+    const meta = await deps.keys.updateCustom({ ownerId: user.userId, providerId: provider, models: [...new Set(body.data.models)], estimatedCostUsd: body.data.estimatedCostUsd, modelPrices: body.data.modelPrices });
     return meta ? json(200, { key: publicKey(meta) }) : apiError(404, "not_found", "Custom provider not found.");
   } catch (error) {
     return internalError(error);

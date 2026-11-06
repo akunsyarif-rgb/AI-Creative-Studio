@@ -160,6 +160,33 @@ export async function downloadAsset(api: ApiClient, assetId: string, navigate: (
 /** Jobs that are still running and worth re-checking. */
 export const isActive = (job: Pick<JobView, "status">) => !TERMINAL.has(job.status);
 
+/**
+ * Like `parseModelList`, but an entry may carry its own price: `model-id=0.0144` (USD per image).
+ * Returns `error` instead of guessing when a price is not a number between 0.0001 and 100.
+ */
+export function parseModelEntries(text: string): { models: string[]; prices: Record<string, number>; error?: string } {
+  const models: string[] = [];
+  const prices: Record<string, number> = {};
+  for (const token of text.split(/[\s,;]+/).map((t) => t.trim()).filter(Boolean)) {
+    const at = token.lastIndexOf("=");
+    const id = at === -1 ? token : token.slice(0, at);
+    if (!id) return { models, prices, error: `"${token}" has no model name before "=".` };
+    if (!models.includes(id)) models.push(id);
+    if (at !== -1) {
+      const raw = token.slice(at + 1);
+      const value = Number(raw);
+      if (!raw || !Number.isFinite(value) || value < 0.0001 || value > 100) return { models, prices, error: `The price for ${id} must be a number between 0.0001 and 100 (USD per image).` };
+      prices[id] = value;
+    }
+  }
+  return { models, prices };
+}
+
+/** Inverse of `parseModelEntries`, for pre-filling the edit form. */
+export function formatModelEntries(models: string[], prices: Record<string, number> | undefined): string {
+  return models.map((m) => (prices && Object.hasOwn(prices, m) ? `${m}=${prices[m]}` : m)).join(", ");
+}
+
 /** Splits a free-form list of model ids (commas, spaces or new lines) into unique, trimmed entries. */
 export function parseModelList(text: string): string[] {
   return [...new Set(text.split(/[\s,;]+/).map((m) => m.trim()).filter(Boolean))];
