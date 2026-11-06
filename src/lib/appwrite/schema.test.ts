@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TABLE_SPECS, rowPermissions } from "./schema";
+import { TABLES, TABLE_PREFIX, TABLE_SPECS, rowPermissions } from "./schema";
 
 describe("Appwrite row-level security policy", () => {
   it("enables row security and grants nothing at table level", () => {
@@ -32,5 +32,14 @@ describe("Appwrite row-level security policy", () => {
       expect(c.columns.some((a) => a.key === "ownerId" && a.required)).toBe(true);
       expect(c.indexes.some((i) => i.columns[0] === "ownerId")).toBe(true);
     }
+  });
+
+  it("prefixes every table id so the app can share a database, and keeps ids and kinds in sync", () => {
+    expect(TABLE_SPECS.map((t) => t.kind)).toEqual(["jobs", "keys", "metadata"]);
+    for (const t of TABLE_SPECS) {
+      expect(t.id).toBe(TABLES[t.kind]);
+      expect(t.id.startsWith(TABLE_PREFIX)).toBe(true);
+    }
+    expect(new Set(TABLE_SPECS.map((t) => t.id)).size).toBe(3);
   });
 });

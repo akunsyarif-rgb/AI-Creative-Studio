@@ -9,8 +9,8 @@ const err = (code: number, message: string) => new AppwriteException(message, co
  * behaviours our code relies on: 409 on duplicate ids, 404 on missing rows, async column status,
  * `Query.equal/select/limit/cursorAfter/orderDesc` (parsed from the SDK's JSON query strings).
  */
-export function createFakeTables(opts: { columnsAvailableAfterPolls?: number; scopes?: "all" | "legacy-only" } = {}) {
-  const databases = new Set<string>();
+export function createFakeTables(opts: { columnsAvailableAfterPolls?: number; scopes?: "all" | "legacy-only"; existingDatabases?: string[]; maxDatabases?: number } = {}) {
+  const databases = new Set<string>(opts.existingDatabases ?? []);
   const tables = new Map<string, { name: string; permissions: string[]; rowSecurity: boolean; columns: Map<string, { status: string; type: string; args: unknown }>; indexes: Map<string, unknown>; rows: Map<string, Row> }>();
   const calls: string[] = [];
   let polls = 0;
@@ -36,9 +36,17 @@ export function createFakeTables(opts: { columnsAvailableAfterPolls?: number; sc
   const parse = (queries: string[] = []) => queries.map((q) => JSON.parse(q) as { method: string; attribute?: string; values?: unknown[] });
 
   const api = {
+    async get(p: { databaseId: string }) {
+      guard();
+      if (!databases.has(p.databaseId)) throw err(404, "Database not found");
+      return {};
+    },
     async create(p: { databaseId: string }) {
       guard();
       calls.push(`db:${p.databaseId}`);
+      if (opts.maxDatabases !== undefined && databases.size >= opts.maxDatabases) {
+        throw err(403, "The maximum number of databases allowed for the selected plan has reached. Upgrade to increase the limit.");
+      }
       if (databases.has(p.databaseId)) throw err(409, "Database exists");
       databases.add(p.databaseId);
       return {};

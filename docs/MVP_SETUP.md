@@ -28,7 +28,12 @@ Appwrite's user pool and API-key scopes are per *project*, not per database. If 
 - Create the account in this app first, then set the allowlist and redeploy. (Appwrite emails are unique, so nobody else can take
   your address once you have registered.) For a stricter rule use your Appwrite user id from Console → Auth → Users.
 - Use a dedicated API key for this app and do not change project-wide Auth settings the other app relies on.
-- This app only touches the database named by `APPWRITE_DATABASE_ID` (use a name that cannot clash, e.g. `studio`), but an API key
+- Appwrite Free allows **one database per project**. If another app already uses it, set `APPWRITE_DATABASE_ID` to that
+  existing database's id: this app then creates only its own tables there, named `studio_jobs`, `studio_keys` and
+  `studio_metadata`. Setup never modifies an existing database, and it refuses to touch a pre-existing table that has
+  columns this app does not define. Row-level security keeps each user's rows private, but the tables share a database with
+  the other app's data.
+- This app only touches the database named by `APPWRITE_DATABASE_ID`, but an API key
   with document scopes can technically reach every database in the project, so treat it as sensitive.
 
 ## Appwrite API key scopes (least privilege)

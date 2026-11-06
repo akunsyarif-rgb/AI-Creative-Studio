@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { appwriteAssetsRepository, appwriteJobsRepository, appwriteKeysRepository, deterministicId, type RepoContext } from "./appwrite-repositories";
-import { TABLE_SPECS } from "@/lib/appwrite/schema";
+import { TABLES, TABLE_SPECS } from "@/lib/appwrite/schema";
 import { createFakeTables } from "@/lib/appwrite/fake-tables";
 
 async function setup() {
   const fake = createFakeTables();
   for (const spec of TABLE_SPECS) await fake.api.createTable({ tableId: spec.id, name: spec.name });
   const ctx = { tables: fake.api, databaseId: "studio" } as unknown as RepoContext;
-  return { fake, ctx, rows: (t: string) => fake.state.tables.get(t)!.rows };
+  return { fake, ctx, rows: (t: keyof typeof TABLES) => fake.state.tables.get(TABLES[t])!.rows };
 }
 
 const newJob = (over: Record<string, unknown> = {}) => ({
