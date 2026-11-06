@@ -21,6 +21,12 @@
 - OpenAI prices in `src/lib/providers/openai.ts` are approximate and unverified; `actualCost` is not recorded.
 - No free/local provider is implemented yet, so every generation is paid and requires cost confirmation.
 
+## Checking the deployment
+Open `https://<your-domain>/api/health`. `"ok": true` means every required variable is present and well-formed.
+Otherwise `missing` lists the variable *names* to fix and `warnings` lists likely mistakes (for example mismatched
+Appwrite endpoints, or a bucket name inside `STORAGE_ENDPOINT`). It makes no network calls and never prints values,
+so it does not prove that the keys themselves are correct: use **Test key** and a first upload for that.
+
 ## OpenRouter (unverified)
 The OpenRouter adapter (`black-forest-labs/flux-schnell`, `stabilityai/stable-diffusion-3`, text-to-image only)
 was written without live access to openrouter.ai. It calls `POST /api/v1/images/generations` with
