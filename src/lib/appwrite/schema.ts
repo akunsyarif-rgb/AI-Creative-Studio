@@ -17,13 +17,20 @@ import { Permission, Role } from "node-appwrite";
  *    server API key; routes must also check `ownerId`.
  */
 
-export const TABLES = {
-  jobs: "jobs",
-  keys: "keys",
-  metadata: "metadata"
-} as const;
+/**
+ * Logical table kinds. The real table ids are prefixed so that this app can live inside a
+ * database shared with other apps (Appwrite Free allows one database per project) without
+ * colliding with their tables.
+ */
+export type TableKind = "jobs" | "keys" | "metadata";
 
-export type TableId = (typeof TABLES)[keyof typeof TABLES];
+export const TABLE_PREFIX = "studio_";
+
+export const TABLES: Record<TableKind, string> = {
+  jobs: `${TABLE_PREFIX}jobs`,
+  keys: `${TABLE_PREFIX}keys`,
+  metadata: `${TABLE_PREFIX}metadata`
+};
 
 export type ColumnSpec =
   | { type: "string"; key: string; size: number; required: boolean; array?: boolean }
@@ -41,7 +48,9 @@ export interface IndexSpec {
 }
 
 export interface TableSpec {
-  id: TableId;
+  kind: TableKind;
+  /** Actual Appwrite table id (prefixed). */
+  id: string;
   name: string;
   rowSecurity: true;
   /** Table-level permissions. Intentionally empty: see policy above. */
@@ -54,7 +63,8 @@ export const JOB_STATUSES = ["queued", "submitted", "processing", "validating", 
 
 export const TABLE_SPECS: TableSpec[] = [
   {
-    id: "jobs",
+    kind: "jobs",
+    id: TABLES.jobs,
     name: "Jobs",
     rowSecurity: true,
     permissions: [],
@@ -85,7 +95,8 @@ export const TABLE_SPECS: TableSpec[] = [
     ]
   },
   {
-    id: "keys",
+    kind: "keys",
+    id: TABLES.keys,
     name: "Provider keys",
     rowSecurity: true,
     permissions: [],
@@ -101,7 +112,8 @@ export const TABLE_SPECS: TableSpec[] = [
     indexes: [{ key: "uniq_owner_provider", type: "unique", columns: ["ownerId", "providerId"] }]
   },
   {
-    id: "metadata",
+    kind: "metadata",
+    id: TABLES.metadata,
     name: "Asset metadata",
     rowSecurity: true,
     permissions: [],
@@ -125,7 +137,7 @@ export const TABLE_SPECS: TableSpec[] = [
 ];
 
 /** Row-level permissions for a newly created row, by table. */
-export function rowPermissions(table: TableId, ownerId: string): string[] {
+export function rowPermissions(table: TableKind, ownerId: string): string[] {
   if (!ownerId) throw new Error("ownerId is required to build row permissions.");
   const owner = Role.user(ownerId);
   switch (table) {

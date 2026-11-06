@@ -4,7 +4,7 @@ import type { ColumnSpec, TableSpec } from "./schema";
 /** The subset of the TablesDB service that provisioning uses (so it can be faked in tests). */
 export type ProvisionClient = Pick<
   TablesDB,
-  | "create" | "createTable" | "updateTable" | "listColumns" | "createIndex"
+  | "get" | "create" | "createTable" | "updateTable" | "listColumns" | "createIndex"
   | "createVarcharColumn" | "createTextColumn" | "createEnumColumn" | "createIntegerColumn" | "createFloatColumn" | "createDatetimeColumn"
 >;
 
@@ -13,6 +13,25 @@ export interface ProvisionOptions {
   /** Max time to wait for columns to become available. */
   waitMs?: number;
   sleep?: (ms: number) => Promise<void>;
+}
+
+function isNotFound(error: unknown): boolean {
+  return error instanceof AppwriteException && error.code === 404;
+}
+
+/**
+ * Refuses to touch a pre-existing table that does not look like ours: it must contain
+ * only columns from our spec (it may be missing some, e.g. after an interrupted run).
+ */
+async function assertOurs(tables: ProvisionClient, databaseId: string, spec: TableSpec): Promise<void> {
+  const { columns } = await tables.listColumns({ databaseId, tableId: spec.id });
+  const ours = new Set(spec.columns.map((c) => c.key));
+  const foreign = (columns as { key: string }[]).map((c) => c.key).filter((k) => !ours.has(k));
+  if (foreign.length) {
+    throw new Error(
+      `Table "${spec.id}" already exists but is not managed by this app (unexpected columns: ${foreign.slice(0, 5).join(", ")}). Refusing to modify it.`
+    );
+  }
 }
 
 async function ignoreExists(log: (l: string) => void, label: string, op: () => Promise<unknown>): Promise<void> {
@@ -67,12 +86,27 @@ export async function provision(tables: ProvisionClient, databaseId: string, spe
   const log = options.log ?? (() => undefined);
   const wait = { waitMs: options.waitMs ?? 60_000, sleep: options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))) };
 
-  await ignoreExists(log, `database ${databaseId}`, () => tables.create({ databaseId, name: "AI Creative Studio" }));
+  // The database may be shared with other apps (and plans can cap the number of databases), so only
+  // create it when it is really absent, and never modify an existing one.
+  try {
+    await tables.get({ databaseId });
+    log(`exists   database ${databaseId}`);
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+    await ignoreExists(log, `database ${databaseId}`, () => tables.create({ databaseId, name: "AI Creative Studio" }));
+  }
 
   for (const spec of specs) {
-    await ignoreExists(log, `table ${spec.id}`, () =>
-      tables.createTable({ databaseId, tableId: spec.id, name: spec.name, permissions: spec.permissions, rowSecurity: spec.rowSecurity })
-    );
+    let existed = false;
+    try {
+      await tables.createTable({ databaseId, tableId: spec.id, name: spec.name, permissions: spec.permissions, rowSecurity: spec.rowSecurity });
+      log(`created  table ${spec.id}`);
+    } catch (error) {
+      if (!(error instanceof AppwriteException && error.code === 409)) throw error;
+      existed = true;
+      log(`exists   table ${spec.id}`);
+    }
+    if (existed) await assertOurs(tables, databaseId, spec);
     // Drift protection: always re-assert the security-relevant settings.
     await tables.updateTable({ databaseId, tableId: spec.id, name: spec.name, permissions: spec.permissions, rowSecurity: spec.rowSecurity });
 
