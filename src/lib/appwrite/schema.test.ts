@@ -52,4 +52,9 @@ describe("Appwrite row-level security policy", () => {
     }
     expect(keys.columns.find((c) => c.key === "models")!.type).toBe("text");
   });
+
+  it("stores the optional HTTP template of a custom provider as unbounded text", () => {
+    const col = TABLE_SPECS.find((t) => t.kind === "keys")!.columns.find((c) => c.key === "httpConfig");
+    expect(col).toMatchObject({ type: "text", required: false });
+  });
 });

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { AppwriteException, Query, type Models, type TablesDB } from "node-appwrite";
 import { TABLES, rowPermissions } from "@/lib/appwrite/schema";
-import type { AssetRecord, AssetsRepository, CustomProviderConfig, JobPatch, JobRecord, JobsRepository, KeyMetadata, KeysRepository, NewJob } from "./repositories";
+import type { AssetRecord, AssetsRepository, CustomProviderConfig, HttpTemplate, JobPatch, JobRecord, JobsRepository, KeyMetadata, KeysRepository, NewJob } from "./repositories";
 
 /** The TablesDB methods the repositories use; the real admin client is injected by `api/deps.ts`. */
 export type RowsClient = Pick<TablesDB, "createRow" | "getRow" | "listRows" | "updateRow" | "deleteRow">;
@@ -122,11 +122,11 @@ export function appwriteAssetsRepository({ tables, databaseId }: RepoContext): A
 type KeyRow = Models.Row & {
   ownerId?: string; validatedAt?: string | null; providerId: string; last4?: string | null;
   validationStatus: KeyMetadata["validationStatus"];
-  label?: string | null; baseUrl?: string | null; models?: string | null; estimatedCostUsd?: number | null;
+  label?: string | null; baseUrl?: string | null; models?: string | null; estimatedCostUsd?: number | null; httpConfig?: string | null;
 };
 
 /** Non-secret columns only: ciphertext is never selected by metadata reads. */
-const META_COLUMNS = ["providerId", "last4", "validationStatus", "label", "baseUrl", "models", "estimatedCostUsd"];
+const META_COLUMNS = ["providerId", "last4", "validationStatus", "label", "baseUrl", "models", "estimatedCostUsd", "httpConfig"];
 
 function toCustom(d: KeyRow): CustomProviderConfig | null {
   if (!d.baseUrl) return null;
@@ -137,7 +137,21 @@ function toCustom(d: KeyRow): CustomProviderConfig | null {
   } catch {
     models = [];
   }
-  return { providerId: d.providerId, label: d.label ?? d.providerId, baseUrl: d.baseUrl, models, estimatedCostUsd: d.estimatedCostUsd ?? null };
+  let http: HttpTemplate | null = null;
+  if (d.httpConfig) {
+    try {
+      const parsed = JSON.parse(d.httpConfig) as Partial<HttpTemplate>;
+      if (typeof parsed.path === "string" && typeof parsed.body === "string" && (parsed.responseKind === "json" || parsed.responseKind === "binary")) {
+        http = {
+          path: parsed.path, authHeader: parsed.authHeader ?? "Authorization", authScheme: parsed.authScheme ?? "Bearer", body: parsed.body,
+          responseKind: parsed.responseKind, responsePath: parsed.responsePath ?? null, testPath: parsed.testPath ?? null
+        };
+      }
+    } catch {
+      http = null;
+    }
+  }
+  return { providerId: d.providerId, label: d.label ?? d.providerId, baseUrl: d.baseUrl, models, estimatedCostUsd: d.estimatedCostUsd ?? null, http };
 }
 
 const toKeyMeta = (d: KeyRow): KeyMetadata => ({
@@ -158,7 +172,7 @@ export function appwriteKeysRepository({ tables, databaseId }: RepoContext): Key
           databaseId, tableId, rowId: idFor(ownerId, providerId),
           data: {
             ownerId, providerId, ...secret, validationStatus: "unvalidated",
-            ...(custom ? { label: custom.label, baseUrl: custom.baseUrl, models: JSON.stringify(custom.models), ...(custom.estimatedCostUsd === null ? {} : { estimatedCostUsd: custom.estimatedCostUsd }) } : {})
+            ...(custom ? { label: custom.label, baseUrl: custom.baseUrl, models: JSON.stringify(custom.models), ...(custom.estimatedCostUsd === null ? {} : { estimatedCostUsd: custom.estimatedCostUsd }), ...(custom.http ? { httpConfig: JSON.stringify(custom.http) } : {}) } : {})
           },
           permissions: rowPermissions("keys", ownerId)
         });

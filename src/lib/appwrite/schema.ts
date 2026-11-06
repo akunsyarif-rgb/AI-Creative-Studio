@@ -111,6 +111,8 @@ export const TABLE_SPECS: TableSpec[] = [
       { type: "string", key: "baseUrl", size: 300, required: false },
       { type: "text", key: "models", required: false },
       { type: "float", key: "estimatedCostUsd", required: false, min: 0 },
+      // JSON of an HttpTemplate for "custom HTTP" providers (null for OpenAI-compatible ones).
+      { type: "text", key: "httpConfig", required: false },
       { type: "enum", key: "validationStatus", elements: ["unvalidated", "valid", "invalid"], required: true },
       { type: "datetime", key: "validatedAt", required: false }
     ],

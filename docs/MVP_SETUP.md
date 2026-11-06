@@ -72,6 +72,18 @@ adapter (see below).
 - The key and base URL settings are stored per user; the key itself is encrypted like every other key.
 - New columns (`label`, `baseUrl`, `models`, `estimatedCostUsd`) were added to `studio_keys`: re-run **Appwrite setup** once.
 
+### Custom HTTP (advanced)
+For a service with its own request style, choose **Custom HTTP request** and describe it from the provider's documentation:
+the site address, the request path (may contain `{{model}}`), the header that carries the key and its prefix, a JSON request
+body using `{{prompt}}`, `{{model}}`, `{{size}}`, `{{width}}`, `{{height}}`, and where the image is in the answer (a dotted path
+such as `data.0.b64_json` whose value is base64, a `data:` link or an https link, or "the image file itself"). An optional GET
+path powers **Test key**.
+- Supported: one JSON POST that answers directly with the image (or a link to it). **Not supported**: file/multipart uploads,
+  keys in the query string, and APIs that return a job id and need polling (many hosted-model services work that way).
+- Placeholders are substituted into string values only, so prompt text cannot change the request structure. Never put your key
+  in the body; it is added in the header you choose. The same network rules apply as for OpenAI-compatible providers.
+- The template is stored per user in `studio_keys.httpConfig` (new column: re-run **Appwrite setup** once).
+
 ## Adding a provider
 Providers are plugged in through the registry; core execution code never changes.
 1. Copy `src/lib/providers/adapters/_template.ts` to `adapters/<provider>.ts` and implement it

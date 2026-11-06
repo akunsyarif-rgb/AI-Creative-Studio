@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { ApiDeps } from "./handlers";
 import { createRateLimiter, type RateLimitRule } from "./rate-limit";
 import type { AssetRecord, CustomProviderConfig, JobPatch, JobRecord, KeyMetadata, NewJob } from "@/lib/data/repositories";
-import { createOpenAICompatibleAdapter } from "@/lib/providers/adapters/openai-compatible";
+import { buildCustomAdapter } from "@/lib/providers/custom";
 import {
   ProviderError,
   type CostEstimate,
@@ -189,7 +189,7 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
       decrypt: async (c, ctx) => decryptWithKeyring(RING, c, ctx)
     },
     providers: createProviderRegistry([adapter]),
-    buildCustomAdapter: (config) => createOpenAICompatibleAdapter(config, { fetch: ((...a: Parameters<typeof fetch>) => customFetch.impl(...a)) as typeof fetch, lookup: publicDns }),
+    buildCustomAdapter: (config) => buildCustomAdapter(config, { fetch: ((...a: Parameters<typeof fetch>) => customFetch.impl(...a)) as typeof fetch, lookup: publicDns }),
     lookup: publicDns,
     limiter: createRateLimiter(opts.limits ?? { keys: { limit: 1000, windowSeconds: 60 }, uploads: { limit: 1000, windowSeconds: 60 }, providerTest: { limit: 1000, windowSeconds: 60 }, jobs: { limit: 1000, windowSeconds: 60 }, assetRead: { limit: 1000, windowSeconds: 60 } }),
     scheduler: { run: (t) => { tasks.push(t); } },
