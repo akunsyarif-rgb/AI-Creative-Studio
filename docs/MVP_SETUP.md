@@ -3,8 +3,8 @@
 0. **Without a terminal (e.g. iPad)**: add repository secrets `APPWRITE_ENDPOINT`, `APPWRITE_PROJECT_ID`, `APPWRITE_API_KEY`,
    `APPWRITE_DATABASE_ID` (GitHub → Settings → Secrets and variables → Actions), then run **Actions → Appwrite setup → Run workflow**.
 1. **Appwrite**: create a project, enable Email/Password auth, add your app's hostname as a *Web platform*
-   (needed for browser sessions). Create a server API key with exactly these scopes (read and write each): `databases`, `tables`, `columns`, `indexes`, `rows`
-   write scopes. Then run `npm run appwrite:setup` (idempotent; re-run after schema changes such as
+   (needed for browser sessions). Create a server API key with exactly these scopes (read and write each): `databases`, `tables`, `columns`, `indexes`, `rows`.
+   Then run `npm run appwrite:setup` (idempotent; re-run after schema changes such as
    the new `keys.last4`, `jobs.errorMessage`, `jobs.outputAssetIds` columns).
 2. **Cloudflare R2**: create a **private** bucket and an S3 API token scoped to it. Add a CORS rule
    allowing `PUT` from your app origin with header `Content-Type` (browsers upload directly with
