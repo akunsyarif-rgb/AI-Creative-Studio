@@ -7,6 +7,10 @@ describe("authErrorMessage", () => {
     expect(authErrorMessage({ code: 403, type: "general_unknown_origin" }, "signin")).toMatch(/not registered/);
   });
 
+  it("names a still-active session instead of calling the password wrong", () => {
+    expect(authErrorMessage({ code: 401, type: "user_session_already_exists" }, "signin")).toMatch(/Sign out first/);
+  });
+
   it("names a disabled sign-in method", () => {
     expect(authErrorMessage({ code: 501, type: "user_auth_method_unsupported" }, "signup")).toMatch(/Auth → Settings/);
   });
