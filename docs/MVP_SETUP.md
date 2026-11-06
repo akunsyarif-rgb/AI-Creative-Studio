@@ -72,12 +72,15 @@ adapter (see below).
 - The key and base URL settings are stored per user; the key itself is encrypted like every other key.
 - New columns (`label`, `baseUrl`, `models`, `estimatedCostUsd`) were added to `studio_keys`: re-run **Appwrite setup** once.
 
-### Preset slots (OpenAI-compatible)
-`src/lib/providers/presets.ts` holds ready-made slots for OpenAI-compatible services. **SpicyAPI** is prepared there with
-`baseUrl = https://api.spicyapi.com/v1` and the model list `["spicy-image-1"]`; to change either, edit that file (nothing else).
-A preset behaves like a built-in provider: save its key on **API keys** (card "SpicyAPI"), then choose it in the Studio's
-Provider/Model dropdowns. Its price is "unknown" until you set `estimatedCostUsd`, so each request needs explicit consent.
-Presets are not verified against the real services; confirm address, model name and response format with a real key.
+### SpicyAPI (native task API)
+SpicyAPI does **not** offer an OpenAI-style images endpoint; images use an asynchronous task API (`createTask`, then polling).
+On **API keys → Add another provider** choose *OpenAI-compatible*, set the address to `https://api.spicyapi.ai/api/v1`
+(the app recognises this host and uses the native adapter) and list the model ids exactly as shown in your SpicyAPI model
+catalog (the authenticated catalog is the only valid source). Text-to-image only, prompt only: other fields differ per model.
+- Create the key on SpicyAPI as a *Model API* key, restrict it to the image model(s) you use and **set a spend cap**: the app
+  cannot know the price in advance, so every request asks for "price unknown" consent and the cap is your hard limit.
+- One `createTask` attempt per job (never retried). Waiting is bounded (~4 min); if it runs out, the task id is shown so you can
+  check SpicyAPI's task history instead of paying twice. Subject swap, reference/edit endpoints are intentionally not supported.
 
 ### Custom HTTP (advanced)
 For a service with its own request style, choose **Custom HTTP request** and describe it from the provider's documentation:

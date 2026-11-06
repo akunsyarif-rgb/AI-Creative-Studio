@@ -1,7 +1,5 @@
 import { createOpenAIAdapter } from "./adapters/openai";
-import { createOpenAICompatibleAdapter } from "./adapters/openai-compatible";
 import { createOpenRouterAdapter } from "./adapters/openrouter";
-import { OPENAI_COMPATIBLE_PRESETS } from "./presets";
 import { createProviderRegistry } from "./registry";
 
 /**
@@ -11,9 +9,7 @@ import { createProviderRegistry } from "./registry";
  */
 export const providerRegistry = createProviderRegistry([
   createOpenAIAdapter(),
-  createOpenRouterAdapter(),
-  // OpenAI-compatible slots (SpicyAPI, ...): configure them in `presets.ts`.
-  ...OPENAI_COMPATIBLE_PRESETS.map((preset) => createOpenAICompatibleAdapter(preset, {}, { description: preset.description }))
+  createOpenRouterAdapter()
   // createYourAdapter(),   // <- copy adapters/_template.ts
 ]);
 
