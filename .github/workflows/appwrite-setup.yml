@@ -1,7 +1,7 @@
 name: Appwrite setup
 
 # Manual only: run from the GitHub Actions tab ("Run workflow"). It creates/updates
-# the database, collections, attributes, indexes and document-level-security
+# the database, tables, columns, indexes and row-level-security
 # settings defined in src/lib/appwrite/schema.ts. It is idempotent and never
 # deletes anything. Secrets are read from repository secrets and never printed.
 on:
