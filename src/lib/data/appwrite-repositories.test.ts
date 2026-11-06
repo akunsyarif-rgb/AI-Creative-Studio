@@ -120,6 +120,19 @@ describe("keys repository", () => {
     expect(await repo.setValidation("bob", "openai", "valid")).toBe(false);
   });
 
+  it("updates only models and price of the owner's own custom row", async () => {
+    const { ctx } = await setup();
+    const repo = appwriteKeysRepository(ctx);
+    const custom = { label: "Acme", baseUrl: "https://api.acme.example/v1", models: ["m1", "m2"], estimatedCostUsd: 0.05 };
+    await repo.create({ ...secret, providerId: "custom-acme", custom });
+    await repo.create({ ...secret, providerId: "openai" });
+    expect(await repo.updateCustom({ ownerId: "alice", providerId: "custom-acme", models: ["x1"], estimatedCostUsd: null })).toBeTruthy();
+    expect(await repo.getCustomConfig("alice", "custom-acme")).toMatchObject({ baseUrl: custom.baseUrl, models: ["x1"], estimatedCostUsd: null });
+    expect(await repo.getCiphertext("alice", "custom-acme")).toBe("bk1.k1.aaa.bbb.ccc");
+    expect(await repo.updateCustom({ ownerId: "bob", providerId: "custom-acme", models: ["x"], estimatedCostUsd: null })).toBeNull();
+    expect(await repo.updateCustom({ ownerId: "alice", providerId: "openai", models: ["x"], estimatedCostUsd: null })).toBeNull();
+  });
+
   it("rotates, validates and deletes", async () => {
     const { ctx } = await setup();
     const repo = appwriteKeysRepository(ctx);

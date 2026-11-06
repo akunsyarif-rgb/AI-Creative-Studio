@@ -164,6 +164,12 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
       async setValidation(o, p, status) { const r = keys.get(kid(o, p)); if (!r) return false; r.validationStatus = status; return true; },
       async list(o) { return [...keys.entries()].filter(([k]) => k.startsWith(`${o}/`)).map(([, r]) => keyMeta(r)); },
       async getCustomConfig(o, p) { return keys.get(kid(o, p))?.custom ?? null; },
+      async updateCustom(i) {
+        const row = keys.get(kid(i.ownerId, i.providerId));
+        if (!row?.custom) return null;
+        row.custom = { ...row.custom, models: i.models, estimatedCostUsd: i.estimatedCostUsd };
+        return keyMeta(row);
+      },
       async listCustom(o) { return [...keys.entries()].filter(([k]) => k.startsWith(`${o}/`)).map(([, r]) => r.custom).filter((c): c is CustomProviderConfig => !!c); },
       async delete(o, p) { return keys.delete(kid(o, p)); }
     },

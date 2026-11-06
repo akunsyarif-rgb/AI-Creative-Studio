@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getProviders, postJob, postProviderTest } from "./handlers";
-import { deleteKey, postKey, customProviderId } from "./keys-handlers";
+import { deleteKey, patchKey, postKey, customProviderId } from "./keys-handlers";
 import { ALICE, BOB, PNG, createTestWorld, jsonRequest, type TestWorld } from "./test-helpers";
 
 const custom = { label: "Acme AI", baseUrl: "https://api.acme.example/v1/", models: ["acme/draw-1"], estimatedCostUsd: 0.05 };
@@ -287,5 +287,35 @@ describe("custom HTTP providers through the API", () => {
   it("rejects model names with dot segments", async () => {
     const w = createTestWorld();
     expect((await add(w, { apiKey: SECRET, custom: { ...base, models: ["a/../b"], http } })).status).toBe(422);
+  });
+});
+
+describe("PATCH /api/keys/:id (edit a custom provider)", () => {
+  const patch = (w: TestWorld, id: string, body: unknown, token = ALICE) =>
+    patchKey(jsonRequest(`/api/keys/${id}`, { token, method: "PATCH", body }), w.deps, id);
+
+  it("changes models and price only; the address and the stored key stay as they were", async () => {
+    const w = createTestWorld();
+    await add(w, { apiKey: SECRET, custom });
+    const before = w.keys.get("alice/custom-acme-ai")!;
+    const cipher = before.ciphertext;
+    const res = await patch(w, "custom-acme-ai", { models: ["acme/draw-1", "acme/edit-1/edit", "acme/draw-1"], estimatedCostUsd: null });
+    expect(res.status).toBe(200);
+    expect((await res.json()).key.custom).toMatchObject({ baseUrl: "https://api.acme.example/v1", models: ["acme/draw-1", "acme/edit-1/edit"], estimatedCostUsd: null });
+    expect(w.keys.get("alice/custom-acme-ai")!.ciphertext).toBe(cipher);
+  });
+
+  it("refuses to move the key elsewhere, bad model ids, built-in providers, missing providers and other users' providers", async () => {
+    const w = createTestWorld();
+    await add(w, { apiKey: SECRET, custom });
+    expect((await patch(w, "custom-acme-ai", { models: ["m1"], estimatedCostUsd: 0.05, baseUrl: "https://evil.example" })).status).toBe(422);
+    expect((await patch(w, "custom-acme-ai", { models: ["https://x.example/m"], estimatedCostUsd: null })).status).toBe(422);
+    expect((await patch(w, "custom-acme-ai", { models: [], estimatedCostUsd: null })).status).toBe(422);
+    expect((await patch(w, "openai", { models: ["m1"], estimatedCostUsd: null })).status).toBe(404);
+    expect((await patch(w, "custom-nope", { models: ["m1"], estimatedCostUsd: null })).status).toBe(404);
+    expect((await patch(w, "custom-acme-ai", { models: ["m1"], estimatedCostUsd: null }, BOB)).status).toBe(404);
+    expect(w.keys.get("alice/custom-acme-ai")!.custom?.models).toEqual(["acme/draw-1"]);
+    const unauth = await patchKey(jsonRequest("/api/keys/custom-acme-ai", { method: "PATCH", body: { models: ["m"], estimatedCostUsd: null } }), w.deps, "custom-acme-ai");
+    expect(unauth.status).toBe(401);
   });
 });

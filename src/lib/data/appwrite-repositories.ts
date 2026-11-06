@@ -218,6 +218,20 @@ export function appwriteKeysRepository({ tables, databaseId }: RepoContext): Key
         throw error;
       }
     },
+    async updateCustom({ ownerId, providerId, models, estimatedCostUsd }) {
+      // Only an existing custom row of this owner (owner-derived id) can be changed.
+      if (!(await this.getCustomConfig(ownerId, providerId))) return null;
+      try {
+        const doc = await tables.updateRow<KeyRow>({
+          databaseId, tableId, rowId: idFor(ownerId, providerId),
+          data: { models: JSON.stringify(models), estimatedCostUsd }
+        });
+        return toKeyMeta(doc);
+      } catch (error) {
+        if (isCode(error, 404)) return null;
+        throw error;
+      }
+    },
     async listCustom(ownerId) {
       const res = await tables.listRows<KeyRow>({
         databaseId, tableId, queries: [Query.equal("ownerId", ownerId), Query.select(META_COLUMNS), Query.limit(100)]

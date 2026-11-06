@@ -10,6 +10,7 @@ interface KeyView {
   masked: string;
   validationStatus: "unvalidated" | "valid" | "invalid";
   updatedAt: string;
+  custom?: { estimatedCostUsd: number | null } | null;
 }
 
 const STATUS_LABEL = { unvalidated: "Not tested", valid: "Valid", invalid: "Rejected" } as const;
@@ -41,6 +42,10 @@ export default function KeysPage() {
   const [hTestPath, setHTestPath] = useState("");
 
   const [reloadTick, setReloadTick] = useState(0);
+  // Editing the models / price of a custom provider (the key and address stay as they are).
+  const [editCfg, setEditCfg] = useState<string | null>(null);
+  const [eModels, setEModels] = useState("");
+  const [eCost, setECost] = useState("");
   const reload = () => setReloadTick((n) => n + 1);
 
   useEffect(() => {
@@ -85,6 +90,16 @@ export default function KeysPage() {
       else await api.post("/api/keys", { providerId, apiKey });
       setEditing(null);
       return exists ? "Key replaced. Test it to confirm it works." : "Key saved (encrypted). Test it to confirm it works.";
+    });
+  }
+
+  function saveCustomEdit(event: FormEvent, providerId: string) {
+    event.preventDefault();
+    const models = parseModelList(eModels);
+    void run(providerId, async () => {
+      await api.patch(`/api/keys/${providerId}`, { models, estimatedCostUsd: eCost.trim() ? Number(eCost) : null });
+      setEditCfg(null);
+      return "Provider updated. Your saved key was not changed.";
     });
   }
 
@@ -149,7 +164,25 @@ export default function KeysPage() {
                 </div>
               </form>
             )}
-            {key && !showForm && (
+            {key && p.custom && editCfg === p.id && (
+              <form onSubmit={(e) => saveCustomEdit(e, p.id)} className="stack">
+                <label className="field">
+                  <span>Model name(s)</span>
+                  <input required autoCapitalize="none" autoCorrect="off" spellCheck={false} value={eModels} onChange={(e) => setEModels(e.target.value)} />
+                  <small className="muted">Exactly as the provider names them. Separate several with commas (up to 10).</small>
+                </label>
+                <label className="field">
+                  <span>Cost per image in USD (optional)</span>
+                  <input type="number" inputMode="decimal" step="any" min="0.0001" max="100" placeholder="Leave empty if unknown" value={eCost} onChange={(e) => setECost(e.target.value)} />
+                </label>
+                <p className="muted small">The address and your saved key stay the same.</p>
+                <div className="actions">
+                  <button className="btn btn-primary" type="submit" disabled={busy === p.id}>Save changes</button>
+                  <button className="btn" type="button" onClick={() => setEditCfg(null)}>Cancel</button>
+                </div>
+              </form>
+            )}
+            {key && !showForm && editCfg !== p.id && (
               <div className="actions">
                 <button className="btn btn-primary" disabled={busy === p.id} type="button"
                   onClick={() => run(p.id, async () => {
@@ -158,6 +191,12 @@ export default function KeysPage() {
                   })}>
                   {busy === p.id ? "Testing…" : "Test key"}
                 </button>
+                {p.custom && (
+                  <button className="btn" type="button"
+                    onClick={() => { setEditCfg(p.id); setEModels(p.models.map((m) => m.modelId).join(", ")); setECost(key.custom?.estimatedCostUsd ? String(key.custom.estimatedCostUsd) : ""); }}>
+                    Edit
+                  </button>
+                )}
                 <button className="btn" type="button" onClick={() => { setEditing(p.id); setSecret(""); }}>Replace</button>
                 <button className="btn btn-danger" disabled={busy === p.id} type="button"
                   onClick={() => { if (window.confirm(`Delete the saved ${p.name} key?`)) void run(p.id, async () => { await api.delete(`/api/keys/${p.id}`); return "Key deleted."; }); }}>

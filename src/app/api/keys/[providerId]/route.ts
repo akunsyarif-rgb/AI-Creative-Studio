@@ -1,6 +1,6 @@
 import { getApiDeps } from "@/lib/api/deps";
 import { internalError } from "@/lib/api/http";
-import { deleteKey, getKey, putKey } from "@/lib/api/keys-handlers";
+import { deleteKey, getKey, patchKey, putKey } from "@/lib/api/keys-handlers";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +17,14 @@ export async function GET(request: Request, { params }: Ctx) {
 export async function PUT(request: Request, { params }: Ctx) {
   try {
     return await putKey(request, getApiDeps(), (await params).providerId);
+  } catch (error) {
+    return internalError(error);
+  }
+}
+
+export async function PATCH(request: Request, { params }: Ctx) {
+  try {
+    return await patchKey(request, getApiDeps(), (await params).providerId);
   } catch (error) {
     return internalError(error);
   }
