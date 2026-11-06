@@ -9,11 +9,13 @@
 import { AppwriteException, Client, Databases, DatabasesIndexType } from "node-appwrite";
 import { COLLECTION_SPECS, type AttributeSpec } from "../src/lib/appwrite/schema.ts";
 
-function env(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing required env var ${name}`);
-  return value;
+const REQUIRED = ["APPWRITE_ENDPOINT", "APPWRITE_PROJECT_ID", "APPWRITE_API_KEY", "APPWRITE_DATABASE_ID"] as const;
+const missing = REQUIRED.filter((name) => !process.env[name]);
+if (missing.length) {
+  console.error(`Missing required environment variables: ${missing.join(", ")}`);
+  process.exit(1);
 }
+const env = (name: (typeof REQUIRED)[number]) => process.env[name] as string;
 
 const databaseId = env("APPWRITE_DATABASE_ID");
 const databases = new Databases(

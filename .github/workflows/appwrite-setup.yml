@@ -1,0 +1,34 @@
+name: Appwrite setup
+
+# Manual only: run from the GitHub Actions tab ("Run workflow"). It creates/updates
+# the database, collections, attributes, indexes and document-level-security
+# settings defined in src/lib/appwrite/schema.ts. It is idempotent and never
+# deletes anything. Secrets are read from repository secrets and never printed.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appwrite-setup
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Provision Appwrite schema
+        run: npm run appwrite:setup
+        env:
+          APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
+          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
+          APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
+          APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
