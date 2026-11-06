@@ -1,14 +1,14 @@
 import { Permission, Role } from "node-appwrite";
 
 /**
- * Appwrite database schema + document-level security (DLS) policy.
+ * Appwrite TablesDB schema + row-level security (DLS) policy.
  *
  * Policy (enforced by Appwrite, not just by our API):
- *  - Collections grant NO collection-level permissions to anyone (not even
- *    `create`): every document is created by our server (API key), which stamps
+ *  - Tables grant NO table-level permissions to anyone (not even
+ *    `create`): every row is created by our server (API key), which stamps
  *    the owner's permissions on it.
- *  - `documentSecurity: true` makes per-document permissions the only way a
- *    signed-in user can touch a document. A user can only match documents whose
+ *  - `rowSecurity: true` makes per-row permissions the only way a
+ *    signed-in user can touch a row. A user can only match rows whose
  *    permissions name `user:<their id>`.
  *  - jobs/metadata: owner may read (metadata also update/delete). Job state,
  *    cost and provider ids are written only by the server, so a client cannot
@@ -17,16 +17,18 @@ import { Permission, Role } from "node-appwrite";
  *    server API key; routes must also check `ownerId`.
  */
 
-export const COLLECTIONS = {
+export const TABLES = {
   jobs: "jobs",
   keys: "keys",
   metadata: "metadata"
 } as const;
 
-export type CollectionId = (typeof COLLECTIONS)[keyof typeof COLLECTIONS];
+export type TableId = (typeof TABLES)[keyof typeof TABLES];
 
-export type AttributeSpec =
+export type ColumnSpec =
   | { type: "string"; key: string; size: number; required: boolean; array?: boolean }
+  /** Unbounded text (varchar columns are capped at 16381 chars). Cannot be indexed. */
+  | { type: "text"; key: string; required: boolean }
   | { type: "enum"; key: string; elements: string[]; required: boolean }
   | { type: "integer"; key: string; required: boolean; min?: number; max?: number }
   | { type: "float"; key: string; required: boolean; min?: number }
@@ -35,28 +37,28 @@ export type AttributeSpec =
 export interface IndexSpec {
   key: string;
   type: "key" | "unique";
-  attributes: string[];
+  columns: string[];
 }
 
-export interface CollectionSpec {
-  id: CollectionId;
+export interface TableSpec {
+  id: TableId;
   name: string;
-  documentSecurity: true;
-  /** Collection-level permissions. Intentionally empty: see policy above. */
+  rowSecurity: true;
+  /** Table-level permissions. Intentionally empty: see policy above. */
   permissions: string[];
-  attributes: AttributeSpec[];
+  columns: ColumnSpec[];
   indexes: IndexSpec[];
 }
 
 export const JOB_STATUSES = ["queued", "submitted", "processing", "validating", "completed", "failed", "cancelled"];
 
-export const COLLECTION_SPECS: CollectionSpec[] = [
+export const TABLE_SPECS: TableSpec[] = [
   {
     id: "jobs",
     name: "Jobs",
-    documentSecurity: true,
+    rowSecurity: true,
     permissions: [],
-    attributes: [
+    columns: [
       { type: "string", key: "ownerId", size: 36, required: true },
       { type: "string", key: "projectId", size: 36, required: true },
       { type: "string", key: "capability", size: 32, required: true },
@@ -64,7 +66,7 @@ export const COLLECTION_SPECS: CollectionSpec[] = [
       { type: "string", key: "modelId", size: 128, required: true },
       { type: "enum", key: "status", elements: JOB_STATUSES, required: true },
       { type: "string", key: "inputAssetIds", size: 36, required: false, array: true },
-      { type: "string", key: "parameters", size: 16384, required: true },
+      { type: "text", key: "parameters", required: true },
       { type: "string", key: "idempotencyKey", size: 128, required: true },
       { type: "string", key: "requestHash", size: 64, required: true },
       { type: "string", key: "providerJobId", size: 256, required: false },
@@ -77,17 +79,17 @@ export const COLLECTION_SPECS: CollectionSpec[] = [
       { type: "string", key: "currency", size: 3, required: false }
     ],
     indexes: [
-      { key: "idx_owner", type: "key", attributes: ["ownerId"] },
-      { key: "idx_owner_status", type: "key", attributes: ["ownerId", "status"] },
-      { key: "idx_owner_idem", type: "unique", attributes: ["ownerId", "idempotencyKey"] }
+      { key: "idx_owner", type: "key", columns: ["ownerId"] },
+      { key: "idx_owner_status", type: "key", columns: ["ownerId", "status"] },
+      { key: "idx_owner_idem", type: "unique", columns: ["ownerId", "idempotencyKey"] }
     ]
   },
   {
     id: "keys",
     name: "Provider keys",
-    documentSecurity: true,
+    rowSecurity: true,
     permissions: [],
-    attributes: [
+    columns: [
       { type: "string", key: "ownerId", size: 36, required: true },
       { type: "string", key: "providerId", size: 64, required: true },
       { type: "string", key: "ciphertext", size: 4096, required: true },
@@ -96,14 +98,14 @@ export const COLLECTION_SPECS: CollectionSpec[] = [
       { type: "enum", key: "validationStatus", elements: ["unvalidated", "valid", "invalid"], required: true },
       { type: "datetime", key: "validatedAt", required: false }
     ],
-    indexes: [{ key: "uniq_owner_provider", type: "unique", attributes: ["ownerId", "providerId"] }]
+    indexes: [{ key: "uniq_owner_provider", type: "unique", columns: ["ownerId", "providerId"] }]
   },
   {
     id: "metadata",
     name: "Asset metadata",
-    documentSecurity: true,
+    rowSecurity: true,
     permissions: [],
-    attributes: [
+    columns: [
       { type: "string", key: "ownerId", size: 36, required: true },
       { type: "string", key: "projectId", size: 36, required: false },
       { type: "string", key: "objectKey", size: 512, required: true },
@@ -116,17 +118,17 @@ export const COLLECTION_SPECS: CollectionSpec[] = [
       { type: "string", key: "sourceJobId", size: 36, required: false }
     ],
     indexes: [
-      { key: "idx_owner", type: "key", attributes: ["ownerId"] },
-      { key: "uniq_object_key", type: "unique", attributes: ["objectKey"] }
+      { key: "idx_owner", type: "key", columns: ["ownerId"] },
+      { key: "uniq_object_key", type: "unique", columns: ["objectKey"] }
     ]
   }
 ];
 
-/** Document-level permissions for a newly created document, by collection. */
-export function documentPermissions(collection: CollectionId, ownerId: string): string[] {
-  if (!ownerId) throw new Error("ownerId is required to build document permissions.");
+/** Row-level permissions for a newly created row, by table. */
+export function rowPermissions(table: TableId, ownerId: string): string[] {
+  if (!ownerId) throw new Error("ownerId is required to build row permissions.");
   const owner = Role.user(ownerId);
-  switch (collection) {
+  switch (table) {
     case "keys":
       return []; // server-only
     case "jobs":

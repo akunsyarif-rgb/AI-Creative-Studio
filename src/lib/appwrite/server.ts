@@ -1,5 +1,5 @@
 import "server-only";
-import { Account, Client, Databases } from "node-appwrite";
+import { Account, Client, TablesDB } from "node-appwrite";
 import { z } from "zod";
 import type { AuthUser, TokenVerifier } from "@/lib/auth/session";
 
@@ -17,10 +17,10 @@ export function appwriteConfig() {
 }
 
 /** Privileged client. Server-only; bypasses permissions, so callers must enforce ownership. */
-export function adminDatabases(): { databases: Databases; databaseId: string } {
+export function adminTables(): { tables: TablesDB; databaseId: string } {
   const c = appwriteConfig();
   const client = new Client().setEndpoint(c.APPWRITE_ENDPOINT).setProject(c.APPWRITE_PROJECT_ID).setKey(c.APPWRITE_API_KEY);
-  return { databases: new Databases(client), databaseId: c.APPWRITE_DATABASE_ID };
+  return { tables: new TablesDB(client), databaseId: c.APPWRITE_DATABASE_ID };
 }
 
 /** Validates an Appwrite session JWT (created client-side with account.createJWT()). */

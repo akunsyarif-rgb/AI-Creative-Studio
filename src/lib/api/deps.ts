@@ -1,7 +1,7 @@
 import "server-only";
 import { after } from "next/server";
 import { z } from "zod";
-import { verifyAppwriteJwt } from "@/lib/appwrite/server";
+import { adminTables, verifyAppwriteJwt } from "@/lib/appwrite/server";
 import { parseAllowlist, withAllowlist } from "@/lib/auth/allowlist";
 import { appwriteAssetsRepository, appwriteJobsRepository, appwriteKeysRepository } from "@/lib/data/appwrite-repositories";
 import { providerRegistry } from "@/lib/providers";
@@ -29,13 +29,14 @@ export function getApiDeps(): ApiDeps {
   if (cached) return cached;
   const env = storageEnv.safeParse(process.env);
   if (!env.success) throw new Error("R2 storage is not configured (missing or invalid STORAGE_* variables).");
+  const repo = adminTables();
   cached = {
     // The Appwrite project may be shared with other apps, so valid sign-in is not enough:
     // only explicitly allowed accounts may use this app. Fails closed when no allowlist is set.
     verifyToken: withAllowlist(verifyAppwriteJwt, parseAllowlist(process.env)),
-    jobs: appwriteJobsRepository(),
-    assets: appwriteAssetsRepository(),
-    keys: appwriteKeysRepository(),
+    jobs: appwriteJobsRepository(repo),
+    assets: appwriteAssetsRepository(repo),
+    keys: appwriteKeysRepository(repo),
     vault: { encrypt: encryptProviderCredential, decrypt: decryptProviderCredential },
     limiter: createRateLimiter(),
     scheduler: { run: (task) => after(task) },

@@ -3,9 +3,9 @@
 0. **Without a terminal (e.g. iPad)**: add repository secrets `APPWRITE_ENDPOINT`, `APPWRITE_PROJECT_ID`, `APPWRITE_API_KEY`,
    `APPWRITE_DATABASE_ID` (GitHub → Settings → Secrets and variables → Actions), then run **Actions → Appwrite setup → Run workflow**.
 1. **Appwrite**: create a project, enable Email/Password auth, add your app's hostname as a *Web platform*
-   (needed for browser sessions). Create a server API key with databases/collections/attributes/indexes
+   (needed for browser sessions). Create a server API key with exactly these scopes (read and write each): `databases`, `tables`, `columns`, `indexes`, `rows`
    write scopes. Then run `npm run appwrite:setup` (idempotent; re-run after schema changes such as
-   the new `keys.last4`, `jobs.errorMessage`, `jobs.outputAssetIds` attributes).
+   the new `keys.last4`, `jobs.errorMessage`, `jobs.outputAssetIds` columns).
 2. **Cloudflare R2**: create a **private** bucket and an S3 API token scoped to it. Add a CORS rule
    allowing `PUT` from your app origin with header `Content-Type` (browsers upload directly with
    presigned URLs). Do not enable public access.
@@ -30,6 +30,12 @@ Appwrite's user pool and API-key scopes are per *project*, not per database. If 
 - Use a dedicated API key for this app and do not change project-wide Auth settings the other app relies on.
 - This app only touches the database named by `APPWRITE_DATABASE_ID` (use a name that cannot clash, e.g. `studio`), but an API key
   with document scopes can technically reach every database in the project, so treat it as sensitive.
+
+## Appwrite API key scopes (least privilege)
+This app uses the TablesDB API. The key needs only: `databases.read/write`, `tables.read/write`, `columns.read/write`,
+`indexes.read/write`, `rows.read/write`. Do **not** grant `users.*`, `documentsdb.*`, `vectorsdb.*`, `embeddings.*` or `sessions.*`:
+in a shared project, `users.write` would let a leaked key delete or alter other apps' accounts. User sign-in is verified with the
+user's own JWT, so the server key never needs user scopes.
 
 ## Checking the deployment
 Open `https://<your-domain>/api/health`. `"ok": true` means every required variable is present and well-formed.
