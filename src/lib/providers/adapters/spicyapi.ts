@@ -7,6 +7,7 @@ import { MAX_IMAGE_BYTES, createSafeIO, mapStatus, type SafeIODeps } from "./saf
 import {
   ProviderError,
   type CostEstimate,
+  type Capability,
   type ProviderAdapter,
   type ProviderConfig,
   type ProviderExecutionContext,
@@ -15,14 +16,16 @@ import {
 } from "../types";
 
 /**
- * SpicyAPI's native asynchronous task API (https://docs.spicyapi.ai), text-to-image only:
+ * SpicyAPI's native asynchronous task API (https://docs.spicyapi.ai): text-to-image and single-image edit:
  *   POST /api/v1/jobs/createTask      {model, input:{prompt}}  -> 202 {data:{taskId, estimatedCost}}   (billable, ONE attempt)
  *   GET  /api/v1/jobs/recordInfo?taskId=...                    -> state queued|running|succeeded|failed|expired (free)
  *   data.output.assets[0].url                                  -> signed download link
  *
  * Model ids come from the user's own SpicyAPI catalog and are saved like any custom provider's models.
- * Only `prompt` is sent in `input`: other fields differ per model and unknown ones are rejected (nothing charged).
- * Out of scope on purpose: image-to-image, reference images and the "subject swap" (face/head replacement) tools.
+ * What a model can do is read from its id suffix (`.../text-to-image`, `.../edit`). Text-to-image sends only `prompt`.
+ * Edit reads the model's own input schema first (free) and sends only fields it declares, failing BEFORE any
+ * billable call when a required field cannot be filled. Out of scope on purpose: the "subject swap"
+ * (face/head replacement) tools and multi-image inputs.
  * The price is unknown to the app (the hold is returned only after acceptance), so each request needs explicit
  * consent; set a spend cap on the SpicyAPI key for a hard limit.
  */
@@ -43,6 +46,42 @@ export function isSpicyBaseUrl(baseUrl: string): boolean {
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 const MAX_JSON_BYTES = 1024 * 1024;
 const PARAMS = z.object({ prompt: z.string().trim().min(1).max(4000) }).strict();
+/** Inputs travel as data: URIs (SpicyAPI documents only "small" ones), so keep them modest. */
+export const MAX_EDIT_INPUT_BYTES = 3 * 1024 * 1024;
+
+/** What a SpicyAPI model id can do, from its task suffix. Anything unrecognised is treated as text-to-image. */
+export function capabilitiesForModel(modelId: string): Capability[] {
+  if (/\/edit$/.test(modelId)) return ["image_to_image"];
+  return ["text_to_image"];
+}
+
+function encodeModelPath(modelId: string): string {
+  return modelId.split("/").map(encodeURIComponent).join("/");
+}
+
+interface SchemaProperty { type?: unknown; default?: unknown; minItems?: unknown; maxItems?: unknown }
+
+/** Builds `input` for an edit from the model's own schema; throws a known-outcome error if it cannot. */
+export function buildEditInput(schema: unknown, prompt: string, dataUri: string): Record<string, unknown> {
+  const s = schema as { properties?: Record<string, SchemaProperty>; required?: unknown } | null;
+  const props = s && typeof s === "object" ? s.properties : undefined;
+  if (!props || typeof props !== "object") throw new ProviderError("invalid_request", "Could not read this model's input fields, so nothing was sent.", true);
+  if (!("prompt" in props)) throw new ProviderError("invalid_request", "This model does not take a text prompt for edits.", true);
+  const input: Record<string, unknown> = { prompt };
+  const array = props.image_urls;
+  if (array && (array.type === "array" || array.type === undefined)) {
+    if (typeof array.minItems === "number" && array.minItems > 1) throw new ProviderError("invalid_request", `This model needs at least ${array.minItems} input images; only one is supported here.`, true);
+    input.image_urls = [dataUri];
+  } else if (props.image_url) {
+    input.image_url = dataUri;
+  } else {
+    throw new ProviderError("invalid_request", "This model does not accept an input image. Choose an edit model.", true);
+  }
+  const required = Array.isArray(s?.required) ? (s!.required as unknown[]).filter((k): k is string => typeof k === "string") : [];
+  const missing = required.filter((k) => !(k in input) && props[k]?.default === undefined);
+  if (missing.length) throw new ProviderError("invalid_request", `This model needs fields this app cannot fill yet (${missing.slice(0, 5).join(", ")}). Nothing was sent.`, true);
+  return input;
+}
 
 /** Total time spent waiting for one task. The route allows 300 s, so stay well inside it. */
 export const POLL_BUDGET_MS = 240_000;
@@ -85,8 +124,8 @@ export function createSpicyApiAdapter(cfg: CustomProviderConfig, deps: SpicyDeps
   const config: ProviderConfig = {
     id: cfg.providerId,
     name: cfg.label,
-    description: "SpicyAPI (native task API). Text-to-image only. The price is not known in advance, so you confirm each request; set a spend cap on the key.",
-    availableModels: cfg.models.map((modelId) => ({ modelId, displayName: modelId, capabilities: ["text_to_image" as const], isFreeTier: false, parameters: [] }))
+    description: "SpicyAPI (native task API). Text-to-image and single-image edit. The price is not known in advance, so you confirm each request; set a spend cap on the key.",
+    availableModels: cfg.models.map((modelId) => ({ modelId, displayName: modelId, capabilities: capabilitiesForModel(modelId), isFreeTier: false, parameters: [] }))
   };
   const io = createSafeIO(SPICY_API_BASE, deps);
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -119,15 +158,18 @@ export function createSpicyApiAdapter(cfg: CustomProviderConfig, deps: SpicyDeps
 
   return {
     config,
-    getCapabilities: () => ["text_to_image"],
+    getCapabilities: () => [...new Set(cfg.models.flatMap(capabilitiesForModel))],
 
     validateRequest(request) {
-      if (!cfg.models.includes(request.modelId) || request.capability !== "text_to_image") {
+      if (!cfg.models.includes(request.modelId) || !capabilitiesForModel(request.modelId).includes(request.capability)) {
         throw new ProviderError("invalid_request", "Unsupported model or capability.", true);
       }
       const parsed = PARAMS.safeParse(request.parameters);
       if (!parsed.success) throw new ProviderError("invalid_request", "Invalid parameters: only a prompt is supported for SpicyAPI.", true);
-      if (request.inputAssetIds.length > 0) throw new ProviderError("invalid_request", "This provider does not accept input images.", true);
+      const wanted = request.capability === "image_to_image" ? 1 : 0;
+      if (request.inputAssetIds.length !== wanted) {
+        throw new ProviderError("invalid_request", wanted ? "Choose exactly one image to edit." : "This model does not accept input images.", true);
+      }
     },
 
     async testKey(secret) {
@@ -146,11 +188,25 @@ export function createSpicyApiAdapter(cfg: CustomProviderConfig, deps: SpicyDeps
 
     async executeJob(request: ProviderJobRequest, idempotencyKey: string, context: ProviderExecutionContext): Promise<ProviderJobResult> {
       const params = PARAMS.parse(request.parameters);
+      let input: Record<string, unknown> = { prompt: params.prompt };
+      if (request.capability === "image_to_image") {
+        const file = context.inputFiles[0];
+        if (!file) throw new ProviderError("invalid_request", "The image to edit is missing.", true);
+        if (file.data.length > MAX_EDIT_INPUT_BYTES) {
+          throw new ProviderError("invalid_request", "That image is too large to send (limit 3 MB). Use a smaller or compressed copy. Nothing was sent.", true);
+        }
+        // Reading the model's fields is free; do it before anything billable so a mismatch costs nothing.
+        const meta = await io.call(`/models/${encodeModelPath(request.modelId)}`, { method: "GET", headers: auth(context.secret) });
+        const metaBody = await readEnvelope(meta);
+        if (!meta.ok) throw mapCreateError(meta.status, metaBody.code, undefined);
+        const schema = (metaBody.data as { inputSchema?: unknown } | undefined)?.inputSchema;
+        input = buildEditInput(schema, params.prompt, `data:${file.contentType};base64,${Buffer.from(file.data).toString("base64")}`);
+      }
       // One attempt only. The idempotency key (derived from the job's) is for SpicyAPI's own replay protection.
       const res = await io.call("/jobs/createTask", {
         method: "POST",
         headers: { ...auth(context.secret), "Content-Type": "application/json", "Idempotency-Key": createHash("sha256").update(`studio:${idempotencyKey}`).digest("hex").slice(0, 48) },
-        body: JSON.stringify({ model: request.modelId, input: { prompt: params.prompt } })
+        body: JSON.stringify({ model: request.modelId, input })
       });
       const envelope = await readEnvelope(res);
       if (!res.ok) throw mapCreateError(res.status, envelope.code, envelope.msg);

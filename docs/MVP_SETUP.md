@@ -76,7 +76,10 @@ adapter (see below).
 SpicyAPI does **not** offer an OpenAI-style images endpoint; images use an asynchronous task API (`createTask`, then polling).
 On **API keys → Add another provider** choose *OpenAI-compatible*, set the address to `https://api.spicyapi.ai/api/v1`
 (the app recognises this host and uses the native adapter) and list the model ids exactly as shown in your SpicyAPI model
-catalog (the authenticated catalog is the only valid source). Text-to-image only, prompt only: other fields differ per model.
+catalog (the authenticated catalog is the only valid source). The model id's ending decides what it does:
+`.../text-to-image` creates an image from a prompt; `.../edit` edits the single reference image you attach in the Studio
+(copies up to 3 MB are sent; the app reads the model's own input fields first and refuses, at no cost, when it needs fields
+it cannot fill). Video is not supported yet.
 - Create the key on SpicyAPI as a *Model API* key, restrict it to the image model(s) you use and **set a spend cap**: the app
   cannot know the price in advance, so every request asks for "price unknown" consent and the cap is your hard limit.
 - One `createTask` attempt per job (never retried). Waiting is bounded (~4 min); if it runs out, the task id is shown so you can

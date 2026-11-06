@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSpicyApiAdapter, isSpicyBaseUrl } from "./spicyapi";
+import { MAX_EDIT_INPUT_BYTES, buildEditInput, capabilitiesForModel, createSpicyApiAdapter, isSpicyBaseUrl } from "./spicyapi";
 import { buildCustomAdapter } from "../custom";
 import type { CustomProviderConfig } from "@/lib/data/repositories";
 import type { Lookup } from "@/lib/net/public-url";
@@ -129,5 +129,84 @@ describe("SpicyAPI native adapter", () => {
     expect(await adapter.testKey("good")).toEqual({ valid: true });
     expect(await adapter.testKey("bad")).toMatchObject({ valid: false });
     expect(calls[0].url).toBe("https://api.spicyapi.ai/api/v1/models?modality=image");
+  });
+});
+
+describe("SpicyAPI image edit", () => {
+  const editCfg: CustomProviderConfig = { ...cfg, models: ["alibaba/z-image-turbo/text-to-image", "vendor/img-edit/edit"] };
+  const schema = (props: Record<string, unknown>, required: string[] = ["prompt"]) => ({ type: "object", properties: props, required });
+  const editReq = (over: Record<string, unknown> = {}) => ({ capability: "image_to_image" as const, modelId: "vendor/img-edit/edit", inputAssetIds: ["a1"], parameters: { prompt: "make it blue", ...over } });
+  const editCtx = { secret: "sk-spicy-SECRET", inputFiles: [{ contentType: "image/png", data: PNG }] };
+
+  function editSetup(modelSchema: unknown, status = 200) {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      if (url.includes("/models/")) return env({ model: "vendor/img-edit/edit", inputSchema: modelSchema }, status);
+      if (url.endsWith("/jobs/createTask")) return env({ taskId: task }, 202);
+      if (url.includes("recordInfo")) return env({ state: "succeeded", output: { assets: [{ url: "https://files.example.com/o.png?sig=1" }] } });
+      return new Response(PNG, { headers: { "content-type": "image/png" } });
+    }) as unknown as typeof fetch;
+    const clock = { t: 0 };
+    return { calls, adapter: createSpicyApiAdapter(editCfg, { fetch: fetchImpl, lookup: publicDns, sleep: async (ms) => { clock.t += ms; }, now: () => clock.t }) };
+  }
+
+  it("infers capabilities from the model id suffix", () => {
+    expect(capabilitiesForModel("vendor/img-edit/edit")).toEqual(["image_to_image"]);
+    expect(capabilitiesForModel("alibaba/z-image-turbo/text-to-image")).toEqual(["text_to_image"]);
+    expect(capabilitiesForModel("plain-name")).toEqual(["text_to_image"]);
+    const a = createSpicyApiAdapter(editCfg);
+    expect(a.getCapabilities().sort()).toEqual(["image_to_image", "text_to_image"]);
+    expect(a.config.availableModels.map((m) => m.capabilities)).toEqual([["text_to_image"], ["image_to_image"]]);
+  });
+
+  it("validates edit requests: edit model, exactly one input image; text models take none", () => {
+    const { adapter } = editSetup({});
+    expect(() => adapter.validateRequest(editReq())).not.toThrow();
+    expect(() => adapter.validateRequest({ ...editReq(), inputAssetIds: [] })).toThrow();
+    expect(() => adapter.validateRequest({ ...editReq(), inputAssetIds: ["a", "b"] })).toThrow();
+    expect(() => adapter.validateRequest({ ...editReq(), modelId: "alibaba/z-image-turbo/text-to-image" })).toThrow();
+    expect(() => adapter.validateRequest({ capability: "text_to_image", modelId: "vendor/img-edit/edit", inputAssetIds: [], parameters: { prompt: "x" } })).toThrow();
+  });
+
+  it("reads the model schema first, sends the image as a data URI in the field the model declares, one createTask", async () => {
+    const { adapter, calls } = editSetup(schema({ prompt: {}, image_urls: { type: "array", minItems: 1, maxItems: 3 }, seed: {} }));
+    const out = await adapter.executeJob(editReq(), "idem", editCtx);
+    expect(out.outputFiles?.[0].contentType).toBe("image/png");
+    expect(calls[0].url).toBe("https://api.spicyapi.ai/api/v1/models/vendor/img-edit/edit");
+    const create = calls.find((c) => c.url.endsWith("/jobs/createTask"))!;
+    const body = JSON.parse(create.init.body as string);
+    expect(body.model).toBe("vendor/img-edit/edit");
+    expect(Object.keys(body.input).sort()).toEqual(["image_urls", "prompt"]);
+    expect(body.input.image_urls[0]).toMatch(/^data:image\/png;base64,/);
+    expect(calls.filter((c) => c.url.endsWith("/jobs/createTask"))).toHaveLength(1);
+  });
+
+  it("uses a single image_url field when that is what the model declares", () => {
+    expect(buildEditInput(schema({ prompt: {}, image_url: {} }), "p", "data:x")).toEqual({ prompt: "p", image_url: "data:x" });
+  });
+
+  it("fails before anything billable when the schema cannot be satisfied", () => {
+    const fails = (sch: unknown) => { try { buildEditInput(sch, "p", "data:x"); } catch (e) { return e as { code: string; outcomeKnown: boolean; message: string }; } return null; };
+    expect(fails(null)).toMatchObject({ code: "invalid_request", outcomeKnown: true });
+    expect(fails(schema({ prompt: {} }))?.message).toMatch(/does not accept an input image/);
+    expect(fails(schema({ image_url: {} }))?.message).toMatch(/text prompt/);
+    expect(fails(schema({ prompt: {}, image_urls: { type: "array", minItems: 2 } }))?.message).toMatch(/at least 2/);
+    expect(fails(schema({ prompt: {}, image_url: {}, mode: {}, strength: { default: 0.5 } }, ["prompt", "image_url", "mode", "strength"]))?.message).toMatch(/mode/);
+  });
+
+  it("never sends createTask when the schema is unusable, the model lookup fails, or the image is too large", async () => {
+    const unusable = editSetup(schema({ prompt: {} }));
+    await expect(unusable.adapter.executeJob(editReq(), "i", editCtx)).rejects.toMatchObject({ outcomeKnown: true });
+    expect(unusable.calls.some((c) => c.url.endsWith("/jobs/createTask"))).toBe(false);
+
+    const denied = editSetup({}, 403);
+    await expect(denied.adapter.executeJob(editReq(), "i", editCtx)).rejects.toMatchObject({ outcomeKnown: true });
+    expect(denied.calls.some((c) => c.url.endsWith("/jobs/createTask"))).toBe(false);
+
+    const big = editSetup(schema({ prompt: {}, image_url: {} }));
+    const huge = { secret: "k", inputFiles: [{ contentType: "image/png", data: new Uint8Array(MAX_EDIT_INPUT_BYTES + 1) }] };
+    await expect(big.adapter.executeJob(editReq(), "i", huge)).rejects.toMatchObject({ message: expect.stringContaining("too large"), outcomeKnown: true });
+    expect(big.calls).toHaveLength(0);
   });
 });
