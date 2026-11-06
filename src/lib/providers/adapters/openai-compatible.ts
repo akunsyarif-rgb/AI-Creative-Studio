@@ -44,7 +44,7 @@ const paramsSchema = z
 
 export type CompatDeps = SafeIODeps;
 
-export function customProviderConfig(cfg: CustomProviderConfig): ProviderConfig {
+export function customProviderConfig(cfg: CustomProviderConfig, descriptionOverride?: string): ProviderConfig {
   let host = "custom endpoint";
   try {
     host = new URL(cfg.baseUrl).hostname;
@@ -54,15 +54,15 @@ export function customProviderConfig(cfg: CustomProviderConfig): ProviderConfig 
   return {
     id: cfg.providerId,
     name: cfg.label,
-    description: `Custom OpenAI-compatible endpoint (${host}). Billed by that provider${cfg.estimatedCostUsd === null ? "; price unknown, you confirm each request" : "; costs shown are your own estimate"}.`,
+    description: descriptionOverride ?? `Custom OpenAI-compatible endpoint (${host}). Billed by that provider${cfg.estimatedCostUsd === null ? "; price unknown, you confirm each request" : "; costs shown are your own estimate"}.`,
     availableModels: cfg.models.map((modelId) => ({
       modelId, displayName: modelId, capabilities: ["text_to_image" as const], isFreeTier: false, parameters: [SIZE_PARAM]
     }))
   };
 }
 
-export function createOpenAICompatibleAdapter(cfg: CustomProviderConfig, deps: CompatDeps = {}): ProviderAdapter {
-  const config = customProviderConfig(cfg);
+export function createOpenAICompatibleAdapter(cfg: CustomProviderConfig, deps: CompatDeps = {}, options: { description?: string } = {}): ProviderAdapter {
+  const config = customProviderConfig(cfg, options.description);
   const io = createSafeIO(cfg.baseUrl, deps);
 
   const call = (path: string, init: RequestInit & { secret: string }): Promise<Response> => {
