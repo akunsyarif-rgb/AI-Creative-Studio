@@ -213,3 +213,78 @@ describe("custom providers without a price estimate", () => {
     expect((await job(w, { confirmUnknownCost: true, confirmedMaxCostUsd: 0.05 })).status).toBe(202);
   });
 });
+
+describe("custom HTTP providers through the API", () => {
+  const http = { path: "/v1/generate", body: '{"model":"{{model}}","prompt":"{{prompt}}"}', responseKind: "json", responsePath: "images.0.b64" };
+  const base = { label: "Acme HTTP", baseUrl: "https://api.acme.example", models: ["draw-1"] };
+  const addHttp = (w: TestWorld, over: Record<string, unknown> = {}, token = ALICE) => add(w, { apiKey: SECRET, custom: { ...base, http: { ...http, ...over } } }, token);
+
+  it("saves the template (normalised, non-secret), returns it without the key, and lists the provider", async () => {
+    const w = createTestWorld();
+    const res = await addHttp(w);
+    expect(res.status).toBe(201);
+    const text = await res.text();
+    expect(text).not.toContain(SECRET);
+    const { key } = JSON.parse(text);
+    expect(key.providerId).toBe("custom-acme-http");
+    expect(key.custom.http).toMatchObject({ path: "/v1/generate", authHeader: "Authorization", authScheme: "Bearer", responseKind: "json", responsePath: "images.0.b64", testPath: null });
+    const list = (await (await getProviders(jsonRequest("/api/providers", { token: ALICE, method: "GET" }), w.deps)).json()).providers;
+    expect(list.find((p: { id: string }) => p.id === "custom-acme-http")).toMatchObject({ custom: true, description: expect.stringContaining("Custom HTTP endpoint") });
+  });
+
+  it("rejects bad templates before storing anything", async () => {
+    const w = createTestWorld();
+    for (const over of [{ body: "{nope" }, { body: '{"x":"y"}' }, { body: '{"p":"{{prompt}}","k":"{{key}}"}' }, { path: "/a/../b" }, { path: "https://evil.example/x" }, { authHeader: "Host" }, { responsePath: undefined }, { authScheme: "Bearer x" }]) {
+      expect((await addHttp(w, over)).status, JSON.stringify(over)).toBe(422);
+    }
+    expect(w.keys.size).toBe(0);
+  });
+
+  it("still applies the base-URL safety rules to HTTP providers", async () => {
+    const w = createTestWorld();
+    for (const baseUrl of ["http://api.acme.example", "https://localhost", "https://169.254.169.254", "https://10.0.0.1"]) {
+      expect((await add(w, { apiKey: SECRET, custom: { ...base, baseUrl, http } })).status, baseUrl).toBe(422);
+    }
+    expect(w.keys.size).toBe(0);
+  });
+
+  it("generates through the template: cost gate, request shape, stored output", async () => {
+    const w = createTestWorld();
+    await addHttp(w, {});
+    const seen: { url: string; body: unknown; auth: string }[] = [];
+    w.customFetch.impl = (async (url: string, init: RequestInit) => {
+      seen.push({ url, body: JSON.parse(init.body as string), auth: (init.headers as Record<string, string>).Authorization });
+      return Response.json({ images: [{ b64: Buffer.from(PNG).toString("base64") }] });
+    }) as unknown as typeof fetch;
+    const body = { providerId: "custom-acme-http", modelId: "draw-1", parameters: { prompt: "a fox" } };
+    const first = await job(w, body);
+    expect(first.status).toBe(409); // unknown price: explicit consent required
+    expect((await job(w, { ...body, confirmUnknownCost: true })).status).toBe(202);
+    await w.runTasks();
+    expect(seen).toEqual([{ url: "https://api.acme.example/v1/generate", body: { model: "draw-1", prompt: "a fox" }, auth: `Bearer ${SECRET}` }]);
+    expect([...w.jobs.values()][0]).toMatchObject({ status: "completed", providerId: "custom-acme-http" });
+    expect(w.objects.size).toBe(1);
+  });
+
+  it("tests the key through the configured check address", async () => {
+    const w = createTestWorld();
+    await addHttp(w, { testPath: "/v1/me" });
+    const urls: string[] = [];
+    w.customFetch.impl = (async (url: string) => { urls.push(url); return Response.json({ ok: true }); }) as unknown as typeof fetch;
+    expect((await (await postProviderTest(jsonRequest("/x", { token: ALICE }), w.deps, "custom-acme-http")).json()).validationStatus).toBe("valid");
+    expect(urls).toEqual(["https://api.acme.example/v1/me"]);
+  });
+
+  it("keeps HTTP providers private to their owner", async () => {
+    const w = createTestWorld();
+    await addHttp(w);
+    const bobs = (await (await getProviders(jsonRequest("/api/providers", { token: BOB, method: "GET" }), w.deps)).json()).providers;
+    expect(bobs.map((p: { id: string }) => p.id)).toEqual(["fake"]);
+    expect((await postProviderTest(jsonRequest("/x", { token: BOB }), w.deps, "custom-acme-http")).status).toBe(404);
+  });
+
+  it("rejects model names with dot segments", async () => {
+    const w = createTestWorld();
+    expect((await add(w, { apiKey: SECRET, custom: { ...base, models: ["a/../b"], http } })).status).toBe(422);
+  });
+});

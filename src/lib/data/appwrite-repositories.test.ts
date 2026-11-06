@@ -142,11 +142,11 @@ describe("keys repository: custom providers", () => {
     const { ctx, rows } = await setup();
     const repo = appwriteKeysRepository(ctx);
     const meta = await repo.create({ ...secret, custom });
-    expect(meta?.custom).toEqual({ providerId: "custom-acme", ...custom });
+    expect(meta?.custom).toEqual({ providerId: "custom-acme", ...custom, http: null });
     expect(rows("keys").size).toBe(1);
     expect((await repo.get("alice", "custom-acme"))?.custom).toMatchObject({ models: ["m1", "m2"], estimatedCostUsd: 0.05 });
-    expect(await repo.getCustomConfig("alice", "custom-acme")).toEqual({ providerId: "custom-acme", ...custom });
-    expect(await repo.listCustom("alice")).toEqual([{ providerId: "custom-acme", ...custom }]);
+    expect(await repo.getCustomConfig("alice", "custom-acme")).toEqual({ providerId: "custom-acme", ...custom, http: null });
+    expect(await repo.listCustom("alice")).toEqual([{ providerId: "custom-acme", ...custom, http: null }]);
     for (const out of [await repo.get("alice", "custom-acme"), await repo.getCustomConfig("alice", "custom-acme"), await repo.listCustom("alice")]) {
       expect(JSON.stringify(out)).not.toContain("bk1.");
     }
@@ -180,5 +180,18 @@ describe("keys repository: custom providers", () => {
     expect(meta?.custom?.estimatedCostUsd).toBeNull();
     expect([...rows("keys").values()][0]).not.toHaveProperty("estimatedCostUsd");
     expect((await repo.getCustomConfig("alice", "custom-acme"))?.estimatedCostUsd).toBeNull();
+  });
+
+  it("round-trips a custom HTTP template and tolerates a corrupt one", async () => {
+    const { ctx, rows } = await setup();
+    const repo = appwriteKeysRepository(ctx);
+    const http = { path: "/models/{{model}}", authHeader: "Authorization", authScheme: "Bearer", body: '{"inputs":"{{prompt}}"}', responseKind: "binary" as const, responsePath: null, testPath: null };
+    await repo.create({ ...secret, custom: { ...custom, http } });
+    expect((await repo.getCustomConfig("alice", "custom-acme"))?.http).toEqual(http);
+    expect([...rows("keys").values()][0].httpConfig).toBe(JSON.stringify(http));
+    [...rows("keys").values()][0].httpConfig = "{broken";
+    expect((await repo.getCustomConfig("alice", "custom-acme"))?.http).toBeNull();
+    [...rows("keys").values()][0].httpConfig = JSON.stringify({ path: 1 });
+    expect((await repo.getCustomConfig("alice", "custom-acme"))?.http).toBeNull();
   });
 });

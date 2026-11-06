@@ -30,6 +30,15 @@ export default function KeysPage() {
   const [cModels, setCModels] = useState("");
   const [cCost, setCCost] = useState("");
   const [cKey, setCKey] = useState("");
+  // Advanced: describe the provider's own request instead of the OpenAI images format.
+  const [cStyle, setCStyle] = useState<"openai" | "http">("openai");
+  const [hPath, setHPath] = useState("");
+  const [hAuthHeader, setHAuthHeader] = useState("Authorization");
+  const [hAuthScheme, setHAuthScheme] = useState("Bearer");
+  const [hBody, setHBody] = useState('{\n  "model": "{{model}}",\n  "prompt": "{{prompt}}"\n}');
+  const [hKind, setHKind] = useState<"json" | "binary">("json");
+  const [hRespPath, setHRespPath] = useState("");
+  const [hTestPath, setHTestPath] = useState("");
 
   const [reloadTick, setReloadTick] = useState(0);
   const reload = () => setReloadTick((n) => n + 1);
@@ -86,7 +95,18 @@ export default function KeysPage() {
     void run("custom-new", async () => {
       await api.post("/api/keys", {
         apiKey,
-        custom: { label: cName.trim(), baseUrl: cUrl.trim(), models, ...(cCost.trim() ? { estimatedCostUsd: Number(cCost) } : {}) }
+        custom: {
+          label: cName.trim(), baseUrl: cUrl.trim(), models, ...(cCost.trim() ? { estimatedCostUsd: Number(cCost) } : {}),
+          ...(cStyle === "http"
+            ? {
+                http: {
+                  path: hPath.trim(), authHeader: hAuthHeader.trim(), authScheme: hAuthScheme.trim(), body: hBody, responseKind: hKind,
+                  ...(hKind === "json" ? { responsePath: hRespPath.trim() } : {}),
+                  ...(hTestPath.trim() ? { testPath: hTestPath.trim() } : {})
+                }
+              }
+            : {})
+        }
       });
       setCName(""); setCUrl(""); setCModels(""); setCKey(""); setCustomOpen(false);
       return "Custom provider saved (key encrypted). Test the key, then pick it in the Studio.";
@@ -152,11 +172,11 @@ export default function KeysPage() {
         <section className="panel key-card" aria-labelledby="k-custom">
           <div className="row-between">
             <div>
-              <h2 id="k-custom">Add an OpenAI-compatible provider</h2>
+              <h2 id="k-custom">Add another provider</h2>
               <p className="muted small">
-                For services that offer an OpenAI-compatible images API (<span className="mono">POST …/images/generations</span>).
-                Check the provider&apos;s documentation for that endpoint: services with a different API style are not supported here
-                yet. Text-to-image only.
+                Choose <b>OpenAI-compatible</b> for services with a <span className="mono">POST …/images/generations</span> endpoint, or
+                <b>Custom HTTP</b> to describe the provider&apos;s own request from its documentation. Works for services that answer
+                directly; APIs that need polling or file uploads are not supported. Text-to-image only.
               </p>
             </div>
             {!customOpen && <button className="btn" type="button" onClick={() => setCustomOpen(true)}>Add</button>}
@@ -168,12 +188,19 @@ export default function KeysPage() {
                 <input required minLength={2} maxLength={64} placeholder="Together AI" value={cName} onChange={(e) => setCName(e.target.value)} />
               </label>
               <label className="field">
+                <span>Type</span>
+                <select value={cStyle} onChange={(e) => setCStyle(e.target.value as "openai" | "http")}>
+                  <option value="openai">OpenAI-compatible images API</option>
+                  <option value="http">Custom HTTP request (advanced)</option>
+                </select>
+              </label>
+              <label className="field">
                 <span>API address (base URL)</span>
                 <input
                   required type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" spellCheck={false} maxLength={300}
                   placeholder="https://api.together.xyz/v1" value={cUrl} onChange={(e) => setCUrl(e.target.value)}
                 />
-                <small className="muted">Must start with https://. Do not include /images/generations.</small>
+                <small className="muted">{cStyle === "http" ? "Only the site address, for example https://api.example.com (the path goes below). Must start with https://." : "Must start with https://. Do not include /images/generations."}</small>
               </label>
               <label className="field">
                 <span>Model name(s)</span>
@@ -181,8 +208,66 @@ export default function KeysPage() {
                   required autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="black-forest-labs/FLUX.1-schnell"
                   value={cModels} onChange={(e) => setCModels(e.target.value)}
                 />
-                <small className="muted">Exactly as the provider names them. Separate several with commas (up to 10).</small>
+                <small className="muted">Exactly as the provider names them. Separate several with commas (up to 10). {cStyle === "http" ? "If the provider has no model names, enter any label." : ""}</small>
               </label>
+              {cStyle === "http" && (
+                <div className="stack">
+                  <label className="field">
+                    <span>Request path</span>
+                    <input
+                      required autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="/v1/generate or /models/{{model}}"
+                      value={hPath} onChange={(e) => setHPath(e.target.value)}
+                    />
+                    <small className="muted">Added after the address. You may use {"{{model}}"} in it.</small>
+                  </label>
+                  <div className="grid-2">
+                    <label className="field">
+                      <span>Key header name</span>
+                      <input required autoCapitalize="none" autoCorrect="off" spellCheck={false} value={hAuthHeader} onChange={(e) => setHAuthHeader(e.target.value)} />
+                    </label>
+                    <label className="field">
+                      <span>Prefix before the key</span>
+                      <input autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="Bearer (or empty)" value={hAuthScheme} onChange={(e) => setHAuthScheme(e.target.value)} />
+                    </label>
+                  </div>
+                  <label className="field">
+                    <span>Request body (JSON)</span>
+                    <textarea
+                      required rows={6} autoCapitalize="none" autoCorrect="off" spellCheck={false} className="mono"
+                      value={hBody} onChange={(e) => setHBody(e.target.value)}
+                    />
+                    <small className="muted">
+                      Placeholders: {"{{prompt}}"}, {"{{model}}"}, {"{{size}}"}, {"{{width}}"}, {"{{height}}"}. {"{{prompt}}"} is required.
+                      Do not put your API key here; it is added automatically in the header.
+                    </small>
+                  </label>
+                  <label className="field">
+                    <span>The answer contains</span>
+                    <select value={hKind} onChange={(e) => setHKind(e.target.value as "json" | "binary")}>
+                      <option value="json">JSON with the image inside</option>
+                      <option value="binary">The image file itself</option>
+                    </select>
+                  </label>
+                  {hKind === "json" && (
+                    <label className="field">
+                      <span>Where is the image in the JSON?</span>
+                      <input
+                        required autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="data.0.b64_json"
+                        value={hRespPath} onChange={(e) => setHRespPath(e.target.value)}
+                      />
+                      <small className="muted">A dotted path, e.g. data.0.b64_json or images.0.url. The value may be base64, a data: link or an https link.</small>
+                    </label>
+                  )}
+                  <label className="field">
+                    <span>Key-check path (optional)</span>
+                    <input
+                      autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="/v1/me"
+                      value={hTestPath} onChange={(e) => setHTestPath(e.target.value)}
+                    />
+                    <small className="muted">A GET address that answers 200 for a valid key. Used by Test key.</small>
+                  </label>
+                </div>
+              )}
               <label className="field">
                 <span>Cost per image in USD (optional)</span>
                 <input type="number" inputMode="decimal" min="0.0001" max="100" step="any" placeholder="Leave empty if unknown" value={cCost} onChange={(e) => setCCost(e.target.value)} />

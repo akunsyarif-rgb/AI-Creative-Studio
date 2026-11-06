@@ -1,6 +1,8 @@
 import { z } from "zod";
+import type { HttpTemplate } from "@/lib/data/repositories";
 import { authenticate } from "@/lib/auth/session";
 import { UnsafeUrlError, assertSafeBaseUrl } from "@/lib/net/public-url";
+import { httpTemplateSchema, normaliseHttpTemplate } from "@/lib/providers/adapters/generic-http";
 import { CUSTOM_PREFIX } from "@/lib/providers/adapters/openai-compatible";
 import { credentialContext } from "@/lib/security/credential-context";
 import { apiError, internalError, json, parseJson, unauthorized } from "./http";
@@ -17,7 +19,11 @@ const apiKey = z
   .max(2000)
   .regex(/^\S+$/, "API key must not contain whitespace");
 
-const modelId = z.string().trim().regex(/^[A-Za-z0-9][\w.\-:/@]{0,127}$/, "Invalid model id");
+const modelId = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9][\w.\-:/@]{0,127}$/, "Invalid model id")
+  .refine((m) => !m.split("/").some((seg) => seg === ".." || seg === "."), "Invalid model id");
 
 /** Settings of a user-defined OpenAI-compatible provider. */
 const customSchema = z.object({
@@ -25,7 +31,9 @@ const customSchema = z.object({
   baseUrl: z.string().trim().min(8).max(300),
   models: z.array(modelId).min(1).max(10),
   /** Optional per-image price guess. Without it every request asks for consent with an "unknown price" notice. */
-  estimatedCostUsd: z.number().min(0.0001).max(100).optional()
+  estimatedCostUsd: z.number().min(0.0001).max(100).optional(),
+  /** Present for a "custom HTTP" provider; absent for an OpenAI-compatible one. */
+  http: httpTemplateSchema.optional()
 });
 
 export const createKeySchema = z
@@ -48,10 +56,10 @@ export function maskLast4(secret: string): string | null {
   return secret.length >= 16 ? secret.slice(-4) : null;
 }
 
-function publicKey(meta: { providerId: string; last4: string | null; validationStatus: string; createdAt: string; updatedAt: string; custom: { label: string; baseUrl: string; models: string[]; estimatedCostUsd: number | null } | null }) {
+function publicKey(meta: { providerId: string; last4: string | null; validationStatus: string; createdAt: string; updatedAt: string; custom: { label: string; baseUrl: string; models: string[]; estimatedCostUsd: number | null; http?: HttpTemplate | null } | null }) {
   return {
     providerId: meta.providerId,
-    custom: meta.custom ? { label: meta.custom.label, baseUrl: meta.custom.baseUrl, models: meta.custom.models, estimatedCostUsd: meta.custom.estimatedCostUsd } : null,
+    custom: meta.custom ? { label: meta.custom.label, baseUrl: meta.custom.baseUrl, models: meta.custom.models, estimatedCostUsd: meta.custom.estimatedCostUsd, http: meta.custom.http ?? null } : null,
     masked: meta.last4 ? `••••${meta.last4}` : "••••",
     validationStatus: meta.validationStatus,
     createdAt: meta.createdAt,
@@ -74,7 +82,7 @@ export async function postKey(request: Request, deps: ApiDeps): Promise<Response
     if (!body.ok) return body.response;
     const { apiKey: secret, custom } = body.data;
     let provider = body.data.providerId as string;
-    let customConfig: { label: string; baseUrl: string; models: string[]; estimatedCostUsd: number | null } | undefined;
+    let customConfig: { label: string; baseUrl: string; models: string[]; estimatedCostUsd: number | null; http: HttpTemplate | null } | undefined;
     if (custom) {
       const id = customProviderId(custom.label);
       if (!id) return apiError(422, "validation_failed", "Choose a name with at least two letters or digits.");
@@ -86,7 +94,7 @@ export async function postKey(request: Request, deps: ApiDeps): Promise<Response
         throw error;
       }
       provider = id;
-      customConfig = { label: custom.label, baseUrl: url.href.replace(/\/$/, ""), models: [...new Set(custom.models)], estimatedCostUsd: custom.estimatedCostUsd ?? null };
+      customConfig = { label: custom.label, baseUrl: url.href.replace(/\/$/, ""), models: [...new Set(custom.models)], estimatedCostUsd: custom.estimatedCostUsd ?? null, http: custom.http ? normaliseHttpTemplate(custom.http) : null };
     }
     const sealed = await seal(deps, user.userId, provider, secret);
     const meta = await deps.keys.create({ ownerId: user.userId, providerId: provider, ...sealed, ...(customConfig ? { custom: customConfig } : {}) });

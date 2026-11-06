@@ -77,7 +77,26 @@ export interface AssetsRepository {
   setStatus(id: string, status: AssetRecord["status"]): Promise<void>;
 }
 
-/** A user-defined provider that speaks the OpenAI images API (`POST {baseUrl}/images/generations`). */
+/** A user-described HTTP request/response for a service with its own (synchronous) API style. */
+export interface HttpTemplate {
+  /** Appended to the base URL; may contain {{model}}. */
+  path: string;
+  authHeader: string;
+  /** Prefix before the key in the auth header (e.g. "Bearer"); may be empty. */
+  authScheme: string;
+  /** JSON request body with {{prompt}}, {{model}}, {{size}}, {{width}}, {{height}} placeholders. */
+  body: string;
+  responseKind: "json" | "binary";
+  /** Dotted path to the image (base64, data: URL or https link) in a JSON answer. */
+  responsePath: string | null;
+  /** Optional GET path used by "Test key". */
+  testPath: string | null;
+}
+
+/**
+ * A user-defined provider. Without `http` it speaks the OpenAI images API
+ * (`POST {baseUrl}/images/generations`); with `http` it follows the user's own request template.
+ */
 export interface CustomProviderConfig {
   /** Always `custom-<slug>`. */
   providerId: string;
@@ -87,6 +106,7 @@ export interface CustomProviderConfig {
   models: string[];
   /** The user's own per-image cost estimate, if they gave one. `null` = unknown price. */
   estimatedCostUsd: number | null;
+  http?: HttpTemplate | null;
 }
 
 /** Public metadata only. Ciphertext never leaves the repository layer except via `getCiphertext`. */
