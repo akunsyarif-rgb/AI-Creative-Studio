@@ -109,7 +109,10 @@ a.private-label { color: var(--accent); }
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 14px; }
 .job-card { display: flex; flex-direction: column; gap: 12px; padding: 14px; }
 .thumb { position: relative; aspect-ratio: 1; border-radius: 12px; overflow: hidden; background: #0c0d10; border: 1px solid var(--panel-border); display: flex; align-items: center; justify-content: center; }
-.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* Videos keep their own proportions so the whole frame is visible (no square crop). */
+.thumb-video { aspect-ratio: auto; }
+.thumb-video video { width: 100%; height: auto; max-height: 75vh; object-fit: contain; display: block; background: #000; }
 .thumb-empty { flex-direction: column; gap: 10px; }
 .job-prompt { margin: 0; font-size: 13px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .job-card p { margin: 0; }
