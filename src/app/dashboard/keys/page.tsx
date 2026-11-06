@@ -152,10 +152,11 @@ export default function KeysPage() {
         <section className="panel key-card" aria-labelledby="k-custom">
           <div className="row-between">
             <div>
-              <h2 id="k-custom">Use any other provider</h2>
+              <h2 id="k-custom">Add an OpenAI-compatible provider</h2>
               <p className="muted small">
-                Works with any service that offers an OpenAI-style images API (<span className="mono">POST …/images/generations</span>),
-                such as Together, Fireworks, DeepInfra, Groq or your own gateway. Image generation only.
+                For services that offer an OpenAI-compatible images API (<span className="mono">POST …/images/generations</span>).
+                Check the provider&apos;s documentation for that endpoint: services with a different API style are not supported here
+                yet. Text-to-image only.
               </p>
             </div>
             {!customOpen && <button className="btn" type="button" onClick={() => setCustomOpen(true)}>Add</button>}
