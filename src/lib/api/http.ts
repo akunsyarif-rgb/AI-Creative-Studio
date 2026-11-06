@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AccessDeniedError } from "@/lib/auth/session";
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -40,6 +41,13 @@ export async function parseJson<T extends z.ZodType>(
 
 /** Logs only the error name, never message/stack (may carry provider or secret data). */
 export function internalError(error: unknown): Response {
+  if (error instanceof AccessDeniedError) {
+    // The caller holds a valid sign-in for this very address, so echoing it back reveals nothing new
+    // and makes allowlist typos easy to spot.
+    console.warn("access_denied");
+    const who = error.email ? ` (${error.email})` : "";
+    return apiError(403, "forbidden", `You are signed in, but this account${who} is not allowed to use this app. The owner must add it to ALLOWED_USER_EMAILS.`);
+  }
   console.error("api_error", error instanceof Error ? error.name : "unknown");
   return apiError(500, "internal_error", "Something went wrong.");
 }
