@@ -6,6 +6,7 @@ import {
   ACCEPTED_IMAGE_TYPES, ApiError, MAX_IMAGE_BYTES, defaultParams, downloadAsset, getAssetUrl, imageModels, imageProviders, pollJob, uploadAsset,
   type JobView, type ProviderView
 } from "@/lib/client/api";
+import { COMPRESS_TARGET_BYTES, compressImage } from "@/lib/client/compress";
 import { useApi } from "@/lib/client/use-session";
 
 /** amount: null means the provider price is unknown (custom provider without an estimate). */
@@ -24,6 +25,7 @@ export default function StudioPage() {
   const [modelChoice, setModelChoice] = useState("");
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [file, setFile] = useState<File | null>(null);
+  const [compressing, setCompressing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ text: string; needsKey?: boolean } | null>(null);
   const [estimate, setEstimate] = useState<Estimate | null>(null);
@@ -65,18 +67,31 @@ export default function StudioPage() {
     setEstimate(null);
   }
 
-  function onFile(event: ChangeEvent<HTMLInputElement>) {
-    const f = event.target.files?.[0] ?? null;
+  async function onFile(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.target;
+    let f = input.files?.[0] ?? null;
     setError(null);
     if (f && !(ACCEPTED_IMAGE_TYPES as readonly string[]).includes(f.type)) {
       setError({ text: "Use a PNG, JPEG or WebP image." });
-      event.target.value = "";
+      input.value = "";
       return;
     }
     if (f && f.size > MAX_IMAGE_BYTES) {
       setError({ text: "Image is too large (max 25 MB)." });
-      event.target.value = "";
+      input.value = "";
       return;
+    }
+    if (f && f.size > COMPRESS_TARGET_BYTES) {
+      setCompressing(true);
+      try {
+        f = await compressImage(f); // a smaller JPEG copy; the original stays on the device
+      } catch (e) {
+        setError({ text: e instanceof Error ? e.message : "This image could not be shrunk." });
+        input.value = "";
+        setCompressing(false);
+        return;
+      }
+      setCompressing(false);
     }
     setFile(f);
     changed();
@@ -197,7 +212,8 @@ export default function StudioPage() {
         <label className="field">
           <span>Reference image (optional)</span>
           <input type="file" accept={ACCEPTED_IMAGE_TYPES.join(",")} onChange={onFile} />
-          {file && <small className="muted">{file.name} · {(file.size / 1024).toFixed(0)} KB. Only use images you own or have permission to edit.</small>}
+          {compressing && <small className="muted" role="status">Shrinking the photo to under 2 MB…</small>}
+          {file && !compressing && <small className="muted">{file.name} · {(file.size / 1024).toFixed(0)} KB. Only use images you own or have permission to edit.</small>}
         </label>
 
         {error && (
