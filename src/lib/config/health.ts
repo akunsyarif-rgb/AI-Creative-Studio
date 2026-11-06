@@ -1,8 +1,9 @@
+import { allowlistConfigured, parseAllowlist } from "@/lib/auth/allowlist";
 import { parseKeyring } from "@/lib/security/secrets-core";
 
 export interface ConfigReport {
   ok: boolean;
-  checks: { appwrite: boolean; browserAuth: boolean; storage: boolean; encryption: boolean };
+  checks: { appwrite: boolean; browserAuth: boolean; storage: boolean; encryption: boolean; access: boolean };
   /** Names of unset or invalid variables. Never values. */
   missing: string[];
   warnings: string[];
@@ -67,6 +68,10 @@ export function checkConfig(env: Env): ConfigReport {
     missing.push("CREDENTIAL_ENCRYPTION_KEYS");
   }
 
+  // Without an allowlist every request is rejected (the Appwrite project's users are not all ours).
+  const access = allowlistConfigured(parseAllowlist(env));
+  if (!access) missing.push("ALLOWED_USER_EMAILS (or ALLOWED_USER_IDS)");
+
   // Common mistakes that pass the checks above but break at runtime.
   if (appwrite && browserAuth && trimSlash(env.APPWRITE_ENDPOINT as string) !== trimSlash(env.NEXT_PUBLIC_APPWRITE_ENDPOINT as string)) {
     warnings.push("APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_ENDPOINT differ");
@@ -84,5 +89,5 @@ export function checkConfig(env: Env): ConfigReport {
     warnings.push("MAX_JOB_COST_USD is invalid; the default of 1 USD is used");
   }
 
-  return { ok: appwrite && browserAuth && storage && encryption, checks: { appwrite, browserAuth, storage, encryption }, missing, warnings };
+  return { ok: appwrite && browserAuth && storage && encryption && access, checks: { appwrite, browserAuth, storage, encryption, access }, missing, warnings };
 }
