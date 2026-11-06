@@ -72,6 +72,13 @@ adapter (see below).
 - The key and base URL settings are stored per user; the key itself is encrypted like every other key.
 - New columns (`label`, `baseUrl`, `models`, `estimatedCostUsd`) were added to `studio_keys`: re-run **Appwrite setup** once.
 
+### Preset slots (OpenAI-compatible)
+`src/lib/providers/presets.ts` holds ready-made slots for OpenAI-compatible services. **SpicyAPI** is prepared there with
+`baseUrl = https://api.spicyapi.com/v1` and the model list `["spicy-image-1"]`; to change either, edit that file (nothing else).
+A preset behaves like a built-in provider: save its key on **API keys** (card "SpicyAPI"), then choose it in the Studio's
+Provider/Model dropdowns. Its price is "unknown" until you set `estimatedCostUsd`, so each request needs explicit consent.
+Presets are not verified against the real services; confirm address, model name and response format with a real key.
+
 ### Custom HTTP (advanced)
 For a service with its own request style, choose **Custom HTTP request** and describe it from the provider's documentation:
 the site address, the request path (may contain `{{model}}`), the header that carries the key and its prefix, a JSON request
