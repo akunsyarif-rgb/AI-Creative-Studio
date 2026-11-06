@@ -37,3 +37,43 @@ describe("GET /api/jobs/:id for a running video job", () => {
     expect((await get(w, id, BOB)).status).toBe(404);
   });
 });
+
+describe("POST /api/jobs concurrency limits", () => {
+  const make = () => {
+    const w = createTestWorld({ adapter: { videoModel: true, submit: async () => ({ status: "processing", providerJobId: "job_abc123456" }) } });
+    w.seedKey("alice", "fake", "k");
+    let n = 0;
+    const post = async (capability: string, key?: string, token = ALICE) =>
+      postJob(jsonRequest("/api/jobs", { token, body: { ...body, capability, idempotencyKey: key ?? `idem-conc-${++n}` } }), w.deps);
+    return { w, post };
+  };
+
+  it("1 video + 2 images are allowed, the 4th job is refused with a clear message", async () => {
+    const { w, post } = make();
+    expect((await post("text_to_video")).status).toBe(202);
+    expect((await post("text_to_image")).status).toBe(202);
+    expect((await post("text_to_image")).status).toBe(202);
+    const refused = await post("text_to_image");
+    expect(refused.status).toBe(429);
+    expect((await refused.json()).error).toMatchObject({ code: "concurrency_limit", details: { active: { total: 3, videos: 1 } } });
+    expect(w.jobs.size).toBe(3); // nothing was created for the refused one
+  });
+
+  it("2 videos + 1 image; a third video is refused even with a free slot", async () => {
+    const { post } = make();
+    expect((await post("text_to_video")).status).toBe(202);
+    expect((await post("text_to_video")).status).toBe(202);
+    expect((await post("text_to_video")).status).toBe(429);
+    expect((await post("text_to_image")).status).toBe(202);
+  });
+
+  it("frees a slot when a job finishes, never blocks a repeat of an existing request, and is per user", async () => {
+    const { w, post } = make();
+    for (const k of ["a-key-0001", "a-key-0002", "a-key-0003"]) expect((await post("text_to_image", k)).status).toBe(202);
+    expect((await post("text_to_image", "a-key-0002")).status).toBe(200); // duplicate: returns the existing job
+    expect((await post("text_to_image", "a-key-0004")).status).toBe(429);
+    expect((await post("text_to_image", "a-key-0005", BOB)).status).toBe(422); // Bob has no key, but is not blocked by Alice's jobs
+    [...w.jobs.values()][0].status = "completed";
+    expect((await post("text_to_image", "a-key-0004")).status).toBe(202);
+  });
+});
