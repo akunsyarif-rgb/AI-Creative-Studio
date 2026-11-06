@@ -52,6 +52,12 @@ export function customProviderId(label: string): string | null {
 }
 export const updateKeySchema = z.object({ apiKey });
 
+/** Editing a custom provider changes only what it offers and costs, never where the key is sent. */
+export const updateCustomSchema = z.object({
+  models: z.array(modelId).min(1).max(10),
+  estimatedCostUsd: z.number().min(0.0001).max(100).nullable()
+}).strict();
+
 /** Reveal at most 4 trailing characters, and only when that is a small fraction of the key. */
 export function maskLast4(secret: string): string | null {
   return secret.length >= 16 ? secret.slice(-4) : null;
@@ -145,6 +151,23 @@ export async function putKey(request: Request, deps: ApiDeps, provider: string):
     const sealed = await seal(deps, user.userId, provider, body.data.apiKey);
     const meta = await deps.keys.replace({ ownerId: user.userId, providerId: provider, ...sealed });
     return meta ? json(200, { key: publicKey(meta) }) : apiError(404, "not_found", "Key not found.");
+  } catch (error) {
+    return internalError(error);
+  }
+}
+
+/** Edit a custom provider's models and price estimate. The address and the key stay as they are. */
+export async function patchKey(request: Request, deps: ApiDeps, provider: string): Promise<Response> {
+  try {
+    const user = await authenticate(request, deps.verifyToken);
+    if (!user) return unauthorized();
+    const limited = enforceRate(deps.limiter, "keys", user.userId);
+    if (limited) return limited;
+    if (!providerId.safeParse(provider).success || !provider.startsWith(CUSTOM_PREFIX)) return apiError(404, "not_found", "Custom provider not found.");
+    const body = await parseJson(request, updateCustomSchema);
+    if (!body.ok) return body.response;
+    const meta = await deps.keys.updateCustom({ ownerId: user.userId, providerId: provider, models: [...new Set(body.data.models)], estimatedCostUsd: body.data.estimatedCostUsd });
+    return meta ? json(200, { key: publicKey(meta) }) : apiError(404, "not_found", "Custom provider not found.");
   } catch (error) {
     return internalError(error);
   }

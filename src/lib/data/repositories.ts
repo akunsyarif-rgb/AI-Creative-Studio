@@ -131,6 +131,8 @@ export interface KeysRepository {
   get(ownerId: string, providerId: string): Promise<KeyMetadata | null>;
   /** The non-secret settings of one of the owner's custom providers, or null. */
   getCustomConfig(ownerId: string, providerId: string): Promise<CustomProviderConfig | null>;
+  /** Changes only the model list and price of one of the owner's custom providers (never the address or key). Null if there is none. */
+  updateCustom(input: { ownerId: string; providerId: string; models: string[]; estimatedCostUsd: number | null }): Promise<KeyMetadata | null>;
   listCustom(ownerId: string): Promise<CustomProviderConfig[]>;
   /** Only for server-side execution: returns the encrypted secret. Never expose in responses. */
   getCiphertext(ownerId: string, providerId: string): Promise<string | null>;
