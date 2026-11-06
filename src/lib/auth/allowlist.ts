@@ -1,4 +1,4 @@
-import type { AuthUser, TokenVerifier } from "./session";
+import { AccessDeniedError, type AuthUser, type TokenVerifier } from "./session";
 
 /**
  * Access allowlist. An Appwrite project's user pool is shared by every app in
@@ -27,10 +27,15 @@ export function isAllowed(user: AuthUser, allowlist: Allowlist): boolean {
   return allowlist.ids.has(user.userId) || (!!user.email && allowlist.emails.has(user.email.toLowerCase()));
 }
 
-/** Wraps a verifier so users outside the allowlist are treated as unauthenticated. */
+/**
+ * Wraps a verifier so signed-in users outside the allowlist are rejected with AccessDeniedError
+ * (a 403), while invalid tokens still yield null (a 401).
+ */
 export function withAllowlist(verify: TokenVerifier, allowlist: Allowlist): TokenVerifier {
   return async (token) => {
     const user = await verify(token);
-    return user && isAllowed(user, allowlist) ? user : null;
+    if (!user) return null;
+    if (!isAllowed(user, allowlist)) throw new AccessDeniedError(user.email);
+    return user;
   };
 }
