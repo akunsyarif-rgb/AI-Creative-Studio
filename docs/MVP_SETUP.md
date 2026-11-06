@@ -67,7 +67,7 @@ adapter (see below).
   to public addresses (checked when saving and again before every request). Redirects are refused for API calls; image
   links in answers are fetched only from public https hosts (max 2 re-validated redirects, 25 MB), and your key is never
   sent to those image hosts. Residual risk: DNS could change between the check and the request.
-- The cost estimate you enter drives the confirmation prompt and the `MAX_JOB_COST_USD` ceiling; an unknown price is never "free".
+- The per-image cost is optional. If you enter one it drives the confirmation prompt and the `MAX_JOB_COST_USD` ceiling. If you leave it empty the price is "unknown": every request needs explicit consent (shown as "price unknown"), nothing is remembered, and the spend ceiling **cannot** be applied. An unknown price is never treated as free.
 - The key and base URL settings are stored per user; the key itself is encrypted like every other key.
 - New columns (`label`, `baseUrl`, `models`, `estimatedCostUsd`) were added to `studio_keys`: re-run **Appwrite setup** once.
 

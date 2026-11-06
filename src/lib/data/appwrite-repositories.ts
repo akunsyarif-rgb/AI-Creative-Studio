@@ -137,7 +137,7 @@ function toCustom(d: KeyRow): CustomProviderConfig | null {
   } catch {
     models = [];
   }
-  return { providerId: d.providerId, label: d.label ?? d.providerId, baseUrl: d.baseUrl, models, estimatedCostUsd: d.estimatedCostUsd ?? 0 };
+  return { providerId: d.providerId, label: d.label ?? d.providerId, baseUrl: d.baseUrl, models, estimatedCostUsd: d.estimatedCostUsd ?? null };
 }
 
 const toKeyMeta = (d: KeyRow): KeyMetadata => ({
@@ -158,7 +158,7 @@ export function appwriteKeysRepository({ tables, databaseId }: RepoContext): Key
           databaseId, tableId, rowId: idFor(ownerId, providerId),
           data: {
             ownerId, providerId, ...secret, validationStatus: "unvalidated",
-            ...(custom ? { label: custom.label, baseUrl: custom.baseUrl, models: JSON.stringify(custom.models), estimatedCostUsd: custom.estimatedCostUsd } : {})
+            ...(custom ? { label: custom.label, baseUrl: custom.baseUrl, models: JSON.stringify(custom.models), ...(custom.estimatedCostUsd === null ? {} : { estimatedCostUsd: custom.estimatedCostUsd }) } : {})
           },
           permissions: rowPermissions("keys", ownerId)
         });

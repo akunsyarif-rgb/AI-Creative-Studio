@@ -28,7 +28,7 @@ export default function KeysPage() {
   const [cName, setCName] = useState("");
   const [cUrl, setCUrl] = useState("");
   const [cModels, setCModels] = useState("");
-  const [cCost, setCCost] = useState("0.05");
+  const [cCost, setCCost] = useState("");
   const [cKey, setCKey] = useState("");
 
   const [reloadTick, setReloadTick] = useState(0);
@@ -86,7 +86,7 @@ export default function KeysPage() {
     void run("custom-new", async () => {
       await api.post("/api/keys", {
         apiKey,
-        custom: { label: cName.trim(), baseUrl: cUrl.trim(), models, estimatedCostUsd: Number(cCost) }
+        custom: { label: cName.trim(), baseUrl: cUrl.trim(), models, ...(cCost.trim() ? { estimatedCostUsd: Number(cCost) } : {}) }
       });
       setCName(""); setCUrl(""); setCModels(""); setCKey(""); setCustomOpen(false);
       return "Custom provider saved (key encrypted). Test the key, then pick it in the Studio.";
@@ -183,9 +183,12 @@ export default function KeysPage() {
                 <small className="muted">Exactly as the provider names them. Separate several with commas (up to 10).</small>
               </label>
               <label className="field">
-                <span>Your estimate of the cost per image (USD)</span>
-                <input required type="number" inputMode="decimal" min="0.0001" max="100" step="any" value={cCost} onChange={(e) => setCCost(e.target.value)} />
-                <small className="muted">Used to ask for your confirmation before each paid request and to enforce the spend limit. Check the provider&apos;s pricing.</small>
+                <span>Cost per image in USD (optional)</span>
+                <input type="number" inputMode="decimal" min="0.0001" max="100" step="any" placeholder="Leave empty if unknown" value={cCost} onChange={(e) => setCCost(e.target.value)} />
+                <small className="muted">
+                  If you leave this empty, each request asks for your confirmation with a &quot;price unknown&quot; notice, and the spend limit
+                  cannot be applied. If you enter a price, you see it before each request and the limit is enforced.
+                </small>
               </label>
               <label className="field">
                 <span>API key</span>

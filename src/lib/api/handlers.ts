@@ -58,7 +58,9 @@ export const createJobSchema = z.object({
     .refine((p) => JSON.stringify(p).length <= 16000, "parameters too large"),
   idempotencyKey: z.string().min(8).max(128).regex(/^[\w.:-]+$/, "Invalid idempotency key"),
   /** Explicit consent to spend up to this many USD. Required for paid models; not part of the request hash. */
-  confirmedMaxCostUsd: z.number().positive().max(1000).optional()
+  confirmedMaxCostUsd: z.number().positive().max(1000).optional(),
+  /** Consent for a request whose price is unknown (custom provider without an estimate). Never remembered. */
+  confirmUnknownCost: z.boolean().optional()
 });
 
 export const presignSchema = z.object({
@@ -102,7 +104,7 @@ export async function postJob(request: Request, deps: ApiDeps): Promise<Response
     if (limited) return limited;
     const body = await parseJson(request, createJobSchema);
     if (!body.ok) return body.response;
-    const { confirmedMaxCostUsd, ...input } = body.data;
+    const { confirmedMaxCostUsd, confirmUnknownCost, ...input } = body.data;
 
     // Fail closed: unknown provider/model/capability => nothing is persisted or submitted.
     const adapter = await resolveAdapter(deps, user.userId, input.providerId);
@@ -136,12 +138,21 @@ export async function postJob(request: Request, deps: ApiDeps): Promise<Response
 
     // Cost disclosure and consent: never spend silently, never exceed the ceiling.
     const estimate = await adapter.estimateCost(jobRequest);
+    let knownCost: number | null = null;
     if (estimate) {
-      if (estimate.amount > deps.maxJobCostUsd) {
-        return apiError(422, "budget_exceeded", `Estimated cost exceeds the per-job limit of ${deps.maxJobCostUsd} ${estimate.currency}.`, { estimate });
-      }
-      if (confirmedMaxCostUsd === undefined || confirmedMaxCostUsd < estimate.amount) {
-        return apiError(409, "cost_confirmation_required", "This is a paid request. Confirm the estimated cost to continue.", { estimate });
+      if (estimate.amount === null) {
+        // Price unknown: the spend ceiling cannot be applied, so require explicit consent for every request.
+        if (confirmUnknownCost !== true) {
+          return apiError(409, "cost_confirmation_required", "The price of this request is unknown. Confirm to continue; the provider will charge its own price.", { estimate });
+        }
+      } else {
+        if (estimate.amount > deps.maxJobCostUsd) {
+          return apiError(422, "budget_exceeded", `Estimated cost exceeds the per-job limit of ${deps.maxJobCostUsd} ${estimate.currency}.`, { estimate });
+        }
+        if (confirmedMaxCostUsd === undefined || confirmedMaxCostUsd < estimate.amount) {
+          return apiError(409, "cost_confirmation_required", "This is a paid request. Confirm the estimated cost to continue.", { estimate });
+        }
+        knownCost = estimate.amount;
       }
     }
 
@@ -150,7 +161,7 @@ export async function postJob(request: Request, deps: ApiDeps): Promise<Response
       ownerId: user.userId, projectId: input.projectId, capability: input.capability, providerId: input.providerId,
       modelId: input.modelId, inputAssetIds: uniqueAssetIds, parameters: input.parameters,
       idempotencyKey: input.idempotencyKey, requestHash: hash,
-      ...(estimate ? { estimatedCost: estimate.amount, currency: estimate.currency } : {})
+      ...(estimate && knownCost !== null ? { estimatedCost: knownCost, currency: estimate.currency } : {})
     });
     if (!created && job.requestHash !== hash) {
       return apiError(409, "idempotency_conflict", "This idempotency key was already used with different parameters.");

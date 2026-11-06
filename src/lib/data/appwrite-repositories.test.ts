@@ -172,4 +172,13 @@ describe("keys repository: custom providers", () => {
     [...rows("keys").values()][0].models = "{not json";
     expect((await repo.getCustomConfig("alice", "custom-acme"))?.models).toEqual([]);
   });
+
+  it("stores no price column when the estimate is unknown, and reads it back as null", async () => {
+    const { ctx, rows } = await setup();
+    const repo = appwriteKeysRepository(ctx);
+    const meta = await repo.create({ ...secret, custom: { ...custom, estimatedCostUsd: null } });
+    expect(meta?.custom?.estimatedCostUsd).toBeNull();
+    expect([...rows("keys").values()][0]).not.toHaveProperty("estimatedCostUsd");
+    expect((await repo.getCustomConfig("alice", "custom-acme"))?.estimatedCostUsd).toBeNull();
+  });
 });

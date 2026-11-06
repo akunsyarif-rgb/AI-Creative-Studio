@@ -85,8 +85,8 @@ export interface CustomProviderConfig {
   /** https base URL, e.g. https://api.example.com/v1 (no trailing slash). */
   baseUrl: string;
   models: string[];
-  /** The user's own per-image cost estimate, used for the cost confirmation gate. */
-  estimatedCostUsd: number;
+  /** The user's own per-image cost estimate, if they gave one. `null` = unknown price. */
+  estimatedCostUsd: number | null;
 }
 
 /** Public metadata only. Ciphertext never leaves the repository layer except via `getCiphertext`. */
