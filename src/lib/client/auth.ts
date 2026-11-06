@@ -55,12 +55,35 @@ export async function getJwt(): Promise<string> {
   return jwt;
 }
 
-/** Maps Appwrite errors to messages that do not leak account existence. */
+interface AppwriteLikeError {
+  code?: number;
+  type?: string;
+}
+
+/**
+ * Maps Appwrite errors to messages. Sign-in failures stay generic (they must not reveal whether an
+ * account exists), but configuration problems are named so they can be fixed, and unknown errors
+ * include Appwrite's numeric code and error type (neither contains secrets).
+ */
 export function authErrorMessage(error: unknown, mode: "signin" | "signup"): string {
-  const code = (error as { code?: number })?.code;
+  const e = (error ?? {}) as AppwriteLikeError;
+  const code = e.code;
+  const type = e.type;
+
   if (code === 429) return "Too many attempts. Wait a minute and try again.";
-  if (mode === "signin") return "Email or password is incorrect.";
-  if (code === 409) return "Could not create the account. Try signing in instead.";
-  if (code === 400) return "Use a valid email and a password of at least 8 characters.";
-  return "Something went wrong. Please try again.";
+  if (type === "general_unknown_origin" || (code === 403 && type?.includes("origin"))) {
+    return "This site's address is not registered in Appwrite. Add it under Apps → Web (hostname only, no https://).";
+  }
+  if (code === 501 || type === "user_auth_method_unsupported") {
+    return "Email/password sign-in is turned off in Appwrite. Enable it under Auth → Settings.";
+  }
+  if (code === undefined || code === 0) {
+    return "Could not reach Appwrite. Check your connection and that the Appwrite endpoint is correct.";
+  }
+  if (mode === "signin" && (code === 401 || code === 400)) return "Email or password is incorrect.";
+  if (mode === "signup") {
+    if (code === 409) return "Could not create the account. Try signing in instead.";
+    if (code === 400) return "Use a valid email and a password of at least 8 characters.";
+  }
+  return `Something went wrong (Appwrite ${code}${type ? `: ${type}` : ""}). Please try again.`;
 }
