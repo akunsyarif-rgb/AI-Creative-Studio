@@ -134,7 +134,8 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
         return { jobs: page, nextCursor: start + limit < all.length ? page[page.length - 1].id : null };
       },
       async getOwned(ownerId, id) { const j = jobs.get(id); return j && j.ownerId === ownerId ? j : null; },
-      async update(id: string, patch: JobPatch) { Object.assign(jobs.get(id)!, patch); }
+      async update(id: string, patch: JobPatch) { Object.assign(jobs.get(id)!, patch); },
+      async delete(ownerId: string, id: string) { const j = jobs.get(id); if (!j || j.ownerId !== ownerId) return false; return jobs.delete(id); }
     },
     assets: {
       async createPendingUpload(i) {
@@ -148,7 +149,8 @@ export function createTestWorld(opts: { adapter?: FakeAdapterOptions; maxJobCost
         return a;
       },
       async findOwned(ownerId, ids) { return ids.map((i) => assets.get(i)).filter((a): a is AssetRecord => !!a && a.ownerId === ownerId); },
-      async setStatus(id, status) { const a = assets.get(id); if (a) a.status = status; }
+      async setStatus(id, status) { const a = assets.get(id); if (a) a.status = status; },
+      async delete(ownerId, id) { const a = assets.get(id); if (!a || a.ownerId !== ownerId) return false; return assets.delete(id); }
     },
     keys: {
       async create(i) {

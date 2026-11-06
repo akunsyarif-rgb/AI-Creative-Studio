@@ -48,6 +48,18 @@ describe("jobs repository", () => {
     expect(await repo.getOwned("alice", "missing")).toBeNull();
   });
 
+  it("deletes only the owner's own job, and reports a missing one", async () => {
+    const { ctx, rows } = await setup();
+    const repo = appwriteJobsRepository(ctx);
+    const { job } = await repo.createIdempotent(newJob());
+    expect(await repo.delete("bob", job.id)).toBe(false);
+    expect(rows("jobs").has(job.id)).toBe(true);
+    expect(await repo.delete("alice", job.id)).toBe(true);
+    expect(rows("jobs").has(job.id)).toBe(false);
+    expect(await repo.delete("alice", job.id)).toBe(false);
+    expect(await repo.delete("alice", "missing")).toBe(false);
+  });
+
   it("lists newest first, scoped to the owner, with cursor pagination", async () => {
     const { ctx } = await setup();
     const repo = appwriteJobsRepository(ctx);
@@ -83,6 +95,17 @@ describe("assets repository", () => {
     expect(await repo.findOwned("alice", [])).toEqual([]);
     await repo.setStatus(mine.id, "uploaded");
     expect((await repo.findOwned("alice", [mine.id]))[0].status).toBe("uploaded");
+  });
+
+  it("deletes only the owner's own record, and reports a missing one", async () => {
+    const { ctx, rows } = await setup();
+    const repo = appwriteAssetsRepository(ctx);
+    const mine = await repo.createPendingUpload({ ownerId: "alice", objectKey: "users/alice/k", contentType: "image/png", size: 10 });
+    expect(await repo.delete("bob", mine.id)).toBe(false);
+    expect(rows("metadata").has(mine.id)).toBe(true);
+    expect(await repo.delete("alice", mine.id)).toBe(true);
+    expect(rows("metadata").has(mine.id)).toBe(false);
+    expect(await repo.delete("alice", mine.id)).toBe(false);
   });
 
   it("records generated outputs as uploaded", async () => {
