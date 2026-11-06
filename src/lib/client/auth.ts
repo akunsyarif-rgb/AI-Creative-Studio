@@ -58,6 +58,13 @@ export async function getJwt(): Promise<string> {
 interface AppwriteLikeError {
   code?: number;
   type?: string;
+  message?: string;
+}
+
+/** Appwrite's validation messages are user-facing (e.g. "Password must be ... not a commonly used password"). */
+function reason(message: string | undefined): string {
+  const m = (message ?? "").replace(/\s+/g, " ").trim();
+  return m && m.length <= 240 ? m : "";
 }
 
 /**
@@ -83,7 +90,12 @@ export function authErrorMessage(error: unknown, mode: "signin" | "signup"): str
   if (mode === "signin" && (code === 401 || code === 400)) return "Email or password is incorrect.";
   if (mode === "signup") {
     if (code === 409) return "Could not create the account. Try signing in instead.";
-    if (code === 400) return "Use a valid email and a password of at least 8 characters.";
+    if (code === 400) {
+      const why = reason(e.message);
+      return why
+        ? `The account could not be created: ${why}`
+        : "The account could not be created. Use a valid email and a strong password (at least 8 characters, not a common password, not containing your email or name).";
+    }
   }
   return `Something went wrong (Appwrite ${code}${type ? `: ${type}` : ""}). Please try again.`;
 }
