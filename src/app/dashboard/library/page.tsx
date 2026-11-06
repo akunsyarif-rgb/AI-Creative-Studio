@@ -43,7 +43,7 @@ function Thumb({ api, assetId, alt }: { api: ApiClient; assetId: string; alt: st
   }
 
   return (
-    <div ref={box} className="thumb">
+    <div ref={box} className={`thumb${isVideo ? " thumb-video" : ""}`}>
       {failed ? <span className="muted small">Preview unavailable</span> : url && isVideo ? (
         <video src={url} controls playsInline preload="metadata" aria-label={alt} onError={onError} />
       ) : url ? (
