@@ -2,6 +2,7 @@ import { z } from "zod";
 import { sniffMime } from "@/lib/storage/sniff";
 import { MAX_IMAGE_BYTES, createSafeIO, mapStatus, type SafeIODeps } from "./safe-io";
 import type { CustomProviderConfig } from "@/lib/data/repositories";
+import { userPriceFor } from "../pricing";
 import {
   ProviderError,
   type CostEstimate,
@@ -96,12 +97,13 @@ export function createOpenAICompatibleAdapter(cfg: CustomProviderConfig, deps: C
       throw mapStatus(res.status);
     },
 
-    async estimateCost(): Promise<CostEstimate | null> {
+    async estimateCost(request?: ProviderJobRequest): Promise<CostEstimate | null> {
+      const price = userPriceFor(cfg, request?.modelId);
       // Never a null *estimate*: an unknown price must still go through the confirmation gate. With no user
       // estimate the amount is null, which the API turns into an explicit "price unknown" consent step.
-      return cfg.estimatedCostUsd === null
+      return price === null
         ? { amount: null, currency: "USD", isEstimate: true, notes: "The price is unknown. The provider will charge its own price to your account." }
-        : { amount: cfg.estimatedCostUsd, currency: "USD", isEstimate: true, notes: "Your own estimate for this provider; actual billing may differ." };
+        : { amount: price, currency: "USD", isEstimate: true, notes: "Your own estimate for this provider; actual billing may differ." };
     },
 
     async executeJob(request: ProviderJobRequest, _idempotencyKey: string, context: ProviderExecutionContext): Promise<ProviderJobResult> {

@@ -4,6 +4,7 @@ import { readLimited } from "@/lib/net/public-url";
 import type { CustomProviderConfig } from "@/lib/data/repositories";
 import { sniffMime } from "@/lib/storage/sniff";
 import { MAX_IMAGE_BYTES, createSafeIO, mapStatus, type SafeIODeps } from "./safe-io";
+import { userPriceFor } from "../pricing";
 import {
   ProviderError,
   type CostEstimate,
@@ -180,10 +181,11 @@ export function createSpicyApiAdapter(cfg: CustomProviderConfig, deps: SpicyDeps
       throw mapStatus(res.status);
     },
 
-    async estimateCost(): Promise<CostEstimate | null> {
-      return cfg.estimatedCostUsd === null
+    async estimateCost(request?: ProviderJobRequest): Promise<CostEstimate | null> {
+      const price = userPriceFor(cfg, request?.modelId);
+      return price === null
         ? { amount: null, currency: "USD", isEstimate: true, notes: "SpicyAPI holds the price when the task is accepted (often cents per image). Set a spend cap on the key for a hard limit." }
-        : { amount: cfg.estimatedCostUsd, currency: "USD", isEstimate: true, notes: "Your own estimate; SpicyAPI's hold may differ." };
+        : { amount: price, currency: "USD", isEstimate: true, notes: "Your own estimate; SpicyAPI's hold may differ." };
     },
 
     async executeJob(request: ProviderJobRequest, idempotencyKey: string, context: ProviderExecutionContext): Promise<ProviderJobResult> {

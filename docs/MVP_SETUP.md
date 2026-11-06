@@ -79,7 +79,9 @@ On **API keys → Add another provider** choose *OpenAI-compatible*, set the add
 catalog (the authenticated catalog is the only valid source). The model id's ending decides what it does:
 `.../text-to-image` creates an image from a prompt; `.../edit` edits the single reference image you attach in the Studio
 (copies up to 3 MB are sent; the app reads the model's own input fields first and refuses, at no cost, when it needs fields
-it cannot fill). Video is not supported yet.
+it cannot fill). Give a model its own price by writing it after `=` in the model list, for example
+`alibaba/qwen-image-2.1-turbo/text-to-image=0.0144`; models without one use the provider's default cost (or ask for
+"price unknown" consent when that is empty). Video is not supported yet.
 - Create the key on SpicyAPI as a *Model API* key, restrict it to the image model(s) you use and **set a spend cap**: the app
   cannot know the price in advance, so every request asks for "price unknown" consent and the cap is your hard limit.
 - One `createTask` attempt per job (never retried). Waiting is bounded (~4 min); if it runs out, the task id is shown so you can

@@ -319,3 +319,37 @@ describe("PATCH /api/keys/:id (edit a custom provider)", () => {
     expect(unauth.status).toBe(401);
   });
 });
+
+describe("per-model prices", () => {
+  const priced = { ...custom, models: ["acme/draw-1", "acme/pro-1"], estimatedCostUsd: 0.05, modelPrices: { "acme/pro-1": 0.2 } };
+
+  it("saves them, returns them, and uses each model's own price in the estimate (default for the rest)", async () => {
+    const w = createTestWorld();
+    const res = await add(w, { apiKey: SECRET, custom: priced });
+    expect(res.status).toBe(201);
+    expect((await res.json()).key.custom).toMatchObject({ modelPrices: { "acme/pro-1": 0.2 }, estimatedCostUsd: 0.05 });
+    const est = async (modelId: string) => {
+      const r = await job(w, { modelId });
+      return (await r.json()).error?.details?.estimate?.amount;
+    };
+    expect(await est("acme/pro-1")).toBe(0.2);
+    expect(await est("acme/draw-1")).toBe(0.05);
+  });
+
+  it("rejects prices for unlisted models, bad values and prototype-looking ids", async () => {
+    const w = createTestWorld();
+    for (const modelPrices of [{ "other/model": 0.1 }, { "acme/pro-1": 0 }, { "acme/pro-1": 1000 }, { "acme/pro-1": "x" }]) {
+      expect((await add(w, { apiKey: SECRET, custom: { ...priced, modelPrices } })).status).toBe(422);
+    }
+    expect(w.keys.size).toBe(0);
+  });
+
+  it("can be edited, and a model removed from the list loses its price", async () => {
+    const w = createTestWorld();
+    await add(w, { apiKey: SECRET, custom: priced });
+    const patch = (body: unknown) => patchKey(jsonRequest("/api/keys/custom-acme-ai", { token: ALICE, method: "PATCH", body }), w.deps, "custom-acme-ai");
+    expect((await patch({ models: ["acme/draw-1", "acme/pro-1"], estimatedCostUsd: 0.05, modelPrices: { "acme/pro-1": 0.3, "acme/draw-1": 0.01 } })).status).toBe(200);
+    expect(w.keys.get("alice/custom-acme-ai")!.custom?.modelPrices).toEqual({ "acme/pro-1": 0.3, "acme/draw-1": 0.01 });
+    expect((await patch({ models: ["acme/draw-1"], estimatedCostUsd: null, modelPrices: { "acme/pro-1": 0.3 } })).status).toBe(422);
+  });
+});

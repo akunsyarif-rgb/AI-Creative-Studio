@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appwriteAssetsRepository, appwriteJobsRepository, appwriteKeysRepository, deterministicId, type RepoContext } from "./appwrite-repositories";
+import { appwriteAssetsRepository, appwriteJobsRepository, appwriteKeysRepository, decodeModels, deterministicId, type RepoContext } from "./appwrite-repositories";
 import { TABLES, TABLE_SPECS } from "@/lib/appwrite/schema";
 import { createFakeTables } from "@/lib/appwrite/fake-tables";
 
@@ -131,6 +131,23 @@ describe("keys repository", () => {
     expect(await repo.getCiphertext("alice", "custom-acme")).toBe("bk1.k1.aaa.bbb.ccc");
     expect(await repo.updateCustom({ ownerId: "bob", providerId: "custom-acme", models: ["x"], estimatedCostUsd: null })).toBeNull();
     expect(await repo.updateCustom({ ownerId: "alice", providerId: "openai", models: ["x"], estimatedCostUsd: null })).toBeNull();
+  });
+
+  it("stores per-model prices inside the models column without a schema change, and reads old rows", async () => {
+    const { ctx, rows } = await setup();
+    const repo = appwriteKeysRepository(ctx);
+    const custom = { label: "Acme", baseUrl: "https://api.acme.example/v1", models: ["m1", "m2"], estimatedCostUsd: 0.05, modelPrices: { m2: 0.2, gone: 9 } };
+    await repo.create({ ...secret, providerId: "custom-acme", custom });
+    expect(await repo.getCustomConfig("alice", "custom-acme")).toMatchObject({ models: ["m1", "m2"], modelPrices: { m2: 0.2 } });
+    expect(JSON.parse([...rows("keys").values()][0].models as string)).toEqual({ ids: ["m1", "m2"], prices: { m2: 0.2 } });
+    await repo.updateCustom({ ownerId: "alice", providerId: "custom-acme", models: ["m1"], estimatedCostUsd: 0.05, modelPrices: { m2: 0.2 } });
+    const after = await repo.getCustomConfig("alice", "custom-acme");
+    expect(after?.models).toEqual(["m1"]);
+    expect(after?.modelPrices).toBeUndefined();
+    expect(JSON.parse([...rows("keys").values()][0].models as string)).toEqual(["m1"]); // back to a plain array
+    expect(decodeModels('["a","b"]')).toEqual({ models: ["a", "b"], prices: {} });
+    expect(decodeModels("garbage")).toEqual({ models: [], prices: {} });
+    expect(decodeModels('{"ids":["a"],"prices":{"a":-1,"b":2,"constructor":3}}')).toEqual({ models: ["a"], prices: {} });
   });
 
   it("rotates, validates and deletes", async () => {

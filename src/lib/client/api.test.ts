@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ApiError, createApiClient, pollJob, uploadAsset, type JobView } from "./api";
+import { ApiError, createApiClient, formatModelEntries, parseModelEntries, pollJob, uploadAsset, type JobView } from "./api";
 
 const jsonRes = (body: unknown, status = 200) => Response.json(body, { status });
 
@@ -130,5 +130,18 @@ describe("parseModelList", () => {
     expect(parseModelList("a/b, c-d ;e\nf,, a/b  ")).toEqual(["a/b", "c-d", "e", "f"]);
     expect(parseModelList("")).toEqual([]);
     expect(parseModelList(" , ")).toEqual([]);
+  });
+});
+
+describe("model entries with per-model prices", () => {
+  it("parses ids with optional =price and formats them back", () => {
+    const r = parseModelEntries("a/text-to-image=0.0144, b/edit  c/x=0.036;a/text-to-image");
+    expect(r).toEqual({ models: ["a/text-to-image", "b/edit", "c/x"], prices: { "a/text-to-image": 0.0144, "c/x": 0.036 } });
+    expect(formatModelEntries(r.models, r.prices)).toBe("a/text-to-image=0.0144, b/edit, c/x=0.036");
+    expect(parseModelEntries("plain").prices).toEqual({});
+  });
+
+  it("reports bad prices instead of guessing", () => {
+    for (const bad of ["m=", "m=abc", "m=0", "m=1000", "=0.1"]) expect(parseModelEntries(bad).error, bad).toBeTruthy();
   });
 });
