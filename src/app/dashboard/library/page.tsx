@@ -55,11 +55,24 @@ function Thumb({ api, assetId, alt }: { api: ApiClient; assetId: string; alt: st
   );
 }
 
-function JobCard({ api, job }: { api: ApiClient; job: JobView }) {
+function JobCard({ api, job, onDeleted }: { api: ApiClient; job: JobView; onDeleted: (id: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const label = job.prompt ? job.prompt.slice(0, 120) : "Generated item";
   const when = job.createdAt ? new Date(job.createdAt).toLocaleString() : "";
+
+  async function remove() {
+    if (!window.confirm("Delete this item permanently? This cannot be undone.")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.delete(`/api/jobs/${job.id}`);
+      onDeleted(job.id);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Delete failed.");
+      setBusy(false);
+    }
+  }
 
   async function save(assetId: string) {
     setBusy(true);
@@ -95,6 +108,9 @@ function JobCard({ api, job }: { api: ApiClient; job: JobView }) {
       {job.prompt && <p className="job-prompt">{job.prompt}</p>}
       {job.status === "failed" && job.errorMessage && <p className="notice notice-error small" role="alert">{job.errorMessage}</p>}
       {error && <p className="notice notice-error small" role="alert">{error}</p>}
+      {!isActive(job) && (
+        <button className="btn btn-danger" type="button" disabled={busy} onClick={() => void remove()}>{busy ? "Working…" : "Delete"}</button>
+      )}
       <p className="muted small">{[job.providerId && job.modelId ? `${job.providerId} · ${job.modelId}` : null, when].filter(Boolean).join(" · ")}</p>
     </article>
   );
@@ -127,6 +143,16 @@ export default function LibraryPage() {
       live = false;
     };
   }, [api, tick]);
+
+  function removeJob(id: string) {
+    const rest = (jobs ?? []).filter((c) => c.id !== id);
+    setJobs(rest);
+    // "Load more" continues after the last loaded job, so if that one is gone move the cursor back (or reload).
+    if (nextCursor === id) {
+      if (rest.length) setNextCursor(rest[rest.length - 1].id);
+      else { setNextCursor(null); setTick((n) => n + 1); }
+    }
+  }
 
   async function loadMore() {
     if (!nextCursor) return;
@@ -188,7 +214,7 @@ export default function LibraryPage() {
         </section>
       )}
       {jobs && jobs.length > 0 && (
-        <div className="gallery">{jobs.map((j) => <JobCard key={j.id} api={api} job={j} />)}</div>
+        <div className="gallery">{jobs.map((j) => <JobCard key={j.id} api={api} job={j} onDeleted={removeJob} />)}</div>
       )}
       {nextCursor && (
         <div className="actions" style={{ justifyContent: "center" }}>

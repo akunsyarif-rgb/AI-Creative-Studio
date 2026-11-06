@@ -45,6 +45,8 @@ export interface JobsRepository {
   getOwned(ownerId: string, id: string): Promise<JobRecord | null>;
   /** Server-side only. Callers must validate the transition with `canTransitionJob`. */
   update(id: string, patch: JobPatch): Promise<void>;
+  /** Removes one of the owner's jobs. False if it does not exist (or is not theirs). */
+  delete(ownerId: string, id: string): Promise<boolean>;
 }
 
 export interface AssetRecord {
@@ -78,6 +80,8 @@ export interface AssetsRepository {
   /** Returns only assets owned by `ownerId`; callers compare counts to detect foreign/missing ids. */
   findOwned(ownerId: string, ids: string[]): Promise<AssetRecord[]>;
   setStatus(id: string, status: AssetRecord["status"]): Promise<void>;
+  /** Removes one of the owner's asset records (the stored object is deleted separately). False if it is not theirs / missing. */
+  delete(ownerId: string, id: string): Promise<boolean>;
 }
 
 /** A user-described HTTP request/response for a service with its own (synchronous) API style. */

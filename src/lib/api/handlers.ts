@@ -10,7 +10,7 @@ import { adapterSupports, resolveAdapter } from "@/lib/providers/resolve";
 import type { Lookup } from "@/lib/net/public-url";
 import { ProviderError, type ProviderAdapter } from "@/lib/providers/types";
 import { credentialContext } from "@/lib/security/credential-context";
-import { concurrencyVerdict } from "@/lib/jobs/concurrency";
+import { ACTIVE_WINDOW_MS, concurrencyVerdict, isVideoCapability } from "@/lib/jobs/concurrency";
 import { executeJob, reconcileJob, type ExecuteDeps } from "@/lib/jobs/execute";
 import { apiError, internalError, json, parseJson, unauthorized } from "./http";
 import { enforceRate, type RateLimiter } from "./rate-limit";
@@ -181,6 +181,37 @@ export async function postJob(request: Request, deps: ApiDeps): Promise<Response
       deps.scheduler.run(() => executeJob(executeDepsOf(deps), job));
     }
     return json(created ? 202 : 200, { job: publicJob(job), duplicate: !created });
+  } catch (error) {
+    return internalError(error);
+  }
+}
+
+/**
+ * Deletes one of the caller's creations: the generated files (storage + records) and the job record. The user's own
+ * uploads are NOT touched (originals are preserved, and several jobs may use the same one). A job that is still
+ * running is refused, unless it is older than the window in which a job can legitimately still be running.
+ */
+export async function deleteJob(request: Request, deps: ApiDeps, jobId: string): Promise<Response> {
+  try {
+    const user = await authenticate(request, deps.verifyToken);
+    if (!user) return unauthorized();
+    const limited = enforceRate(deps.limiter, "jobs", user.userId);
+    if (limited) return limited;
+    if (!id.safeParse(jobId).success) return apiError(404, "not_found", "Job not found.");
+    const job = await deps.jobs.getOwned(user.userId, jobId);
+    if (!job) return apiError(404, "not_found", "Job not found.");
+    const running = ["queued", "submitted", "processing", "validating"].includes(job.status);
+    const age = Date.now() - Date.parse(job.createdAt);
+    if (running && !(Number.isFinite(age) && age > ACTIVE_WINDOW_MS[isVideoCapability(job.capability) ? "video" : "image"])) {
+      return apiError(409, "job_running", "This job is still running. Delete it after it finishes.");
+    }
+    for (const asset of await deps.assets.findOwned(user.userId, job.outputAssetIds)) {
+      // Object first: if it fails the record stays, so nothing is left orphaned and the user can try again.
+      await deps.storage.deleteObject({ ownerId: user.userId, key: asset.objectKey });
+      await deps.assets.delete(user.userId, asset.id);
+    }
+    await deps.jobs.delete(user.userId, job.id);
+    return json(200, { deleted: true });
   } catch (error) {
     return internalError(error);
   }

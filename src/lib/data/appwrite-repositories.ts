@@ -66,6 +66,17 @@ export function appwriteJobsRepository({ tables, databaseId }: RepoContext): Job
     async update(id: string, patch: JobPatch) {
       await tables.updateRow({ databaseId, tableId, rowId: id, data: { ...patch } });
     },
+    async delete(ownerId, id) {
+      try {
+        const doc = await tables.getRow<JobRow>({ databaseId, tableId, rowId: id, queries: [Query.select(["ownerId"])] });
+        if (doc.ownerId !== ownerId) return false;
+        await tables.deleteRow({ databaseId, tableId, rowId: id });
+        return true;
+      } catch (error) {
+        if (error instanceof AppwriteException && error.code === 404) return false;
+        throw error;
+      }
+    },
     async listByOwner(ownerId, limit, cursor) {
       // Fetch one extra row to know whether another page exists.
       const res = await tables.listRows<JobRow>({
@@ -116,6 +127,17 @@ export function appwriteAssetsRepository({ tables, databaseId }: RepoContext): A
     },
     async setStatus(id, status) {
       await tables.updateRow({ databaseId, tableId, rowId: id, data: { status } });
+    },
+    async delete(ownerId, id) {
+      try {
+        const doc = await tables.getRow<AssetRow>({ databaseId, tableId, rowId: id, queries: [Query.select(["ownerId"])] });
+        if (doc.ownerId !== ownerId) return false;
+        await tables.deleteRow({ databaseId, tableId, rowId: id });
+        return true;
+      } catch (error) {
+        if (error instanceof AppwriteException && error.code === 404) return false;
+        throw error;
+      }
     }
   };
 }
