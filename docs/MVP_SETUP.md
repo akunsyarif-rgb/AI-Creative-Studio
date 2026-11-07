@@ -88,6 +88,11 @@ server): at most 3 jobs at once and at most 2 of them videos, so 3 images, or 1 
 job counts while it is running and younger than 10 minutes (images) or 45 minutes (videos), so a job that never finished
 cannot block you forever. The limit is soft: two requests in the very same instant could both get through.
 
+**Images and videos are collected the same way.** After SpicyAPI accepts a task the app stores its id and does not wait;
+the result is picked up whenever you look at the job (Studio / Library). If an older job failed with "did not finish
+task job_…" the task may have completed at SpicyAPI: on its Library card press **Check provider again** (free; it never
+creates a new task). If SpicyAPI never finishes a task it ends as expired and nothing is charged.
+
 **Video (SpicyAPI).** A model id ending in `/text-to-video` or `/image-to-video` appears when you choose **Video** in the
 Studio (with a start image attached it uses the image-to-video model). The app reads the model's input fields first and
 checks the length you chose; it then creates ONE task and saves SpicyAPI's task id. The video itself is collected whenever

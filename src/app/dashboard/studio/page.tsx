@@ -60,7 +60,7 @@ export default function StudioPage() {
     try {
       const final = await pollJob(api, jobId, (job) => patchRun(runId, { job }), {
         signal: abort.current?.signal,
-        ...(kind === "video" ? { intervalMs: 6000, timeoutMs: 20 * 60_000 } : {})
+        ...(kind === "video" ? { intervalMs: 6000, timeoutMs: 20 * 60_000 } : { intervalMs: 3000, timeoutMs: 10 * 60_000 })
       });
       if (final.status === "completed" && final.outputAssetIds[0]) {
         const asset = await getAsset(api, final.outputAssetIds[0]);

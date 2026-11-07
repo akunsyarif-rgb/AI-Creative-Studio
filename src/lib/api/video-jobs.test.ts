@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { getJobById, postJob } from "./handlers";
-import { ALICE, BOB, MP4, createTestWorld, jsonRequest } from "./test-helpers";
+import { getJobById, postJob, recoverJob } from "./handlers";
+import { ProviderError } from "@/lib/providers/types";
+import { ALICE, BOB, MP4, PNG, createTestWorld, jsonRequest } from "./test-helpers";
 
 const body = { projectId: "p1", capability: "text_to_image", providerId: "fake", modelId: "m1", parameters: { prompt: "waves" }, idempotencyKey: "idem-video-001" };
 const get = (w: ReturnType<typeof createTestWorld>, id: string, token = ALICE) => getJobById(jsonRequest(`/api/jobs/${id}`, { token, method: "GET" }), w.deps, id);
@@ -75,5 +76,65 @@ describe("POST /api/jobs concurrency limits", () => {
     expect((await post("text_to_image", "a-key-0005", BOB)).status).toBe(422); // Bob has no key, but is not blocked by Alice's jobs
     [...w.jobs.values()][0].status = "completed";
     expect((await post("text_to_image", "a-key-0004")).status).toBe(202);
+  });
+});
+
+describe("POST /api/jobs/:id/recover (a task we gave up waiting for)", () => {
+  const TASK = "job_06gv7x6y157kw98njfvw41ra0w";
+  const failedUnknown = (w: ReturnType<typeof createTestWorld>, over: Record<string, unknown> = {}) => {
+    const job = {
+      id: "jobR1", ownerId: "alice", projectId: "p1", capability: "text_to_image", providerId: "fake", modelId: "m1", status: "failed",
+      inputAssetIds: [], parameters: { prompt: "x" }, idempotencyKey: "idem-recover-1", requestHash: "h", progress: null,
+      errorCode: "outcome_unknown", errorMessage: `SpicyAPI did not finish task ${TASK} in time. It may still finish and be billed; check your SpicyAPI task history.`,
+      outputAssetIds: [], providerJobId: null, estimatedCost: 0.014, currency: "USD", createdAt: new Date().toISOString(), ...over
+    };
+    w.jobs.set(job.id, job as never);
+    return job.id;
+  };
+  const recover = (w: ReturnType<typeof createTestWorld>, id: string, token = ALICE) => recoverJob(jsonRequest(`/api/jobs/${id}/recover`, { token }), w.deps, id);
+
+  it("reads the task id from the saved message and collects the result without creating anything at the provider", async () => {
+    let asked = "";
+    const w = createTestWorld({ adapter: { videoModel: true, status: async (taskId) => { asked = taskId; return { status: "validating", providerJobId: taskId, outputFiles: [{ contentType: "image/png", data: PNG }] }; } } });
+    w.seedKey("alice", "fake", "k");
+    const id = failedUnknown(w);
+    const res = await recover(w, id);
+    expect(res.status).toBe(200);
+    const job = (await res.json()).job;
+    expect(job).toMatchObject({ status: "completed", errorCode: null });
+    expect(job.outputAssetIds).toHaveLength(1);
+    expect(asked).toBe(TASK);
+    expect(w.calls.submit).toBe(0);
+    expect(w.jobs.get(id)).toMatchObject({ providerJobId: TASK, status: "completed" });
+  });
+
+  it("goes back to processing when the provider is still working, and fails again with a reason when it ended", async () => {
+    const still = createTestWorld({ adapter: { videoModel: true, status: async (t) => ({ status: "processing", providerJobId: t }) } });
+    still.seedKey("alice", "fake", "k");
+    const id = failedUnknown(still, { id: "jobR6" });
+    expect((await (await recover(still, id)).json()).job.status).toBe("processing");
+
+    const ended = createTestWorld({ adapter: { videoModel: true, status: async () => { throw new ProviderError("timeout", "SpicyAPI could not finish the task (timeout). The hold is normally released.", true); } } });
+    ended.seedKey("alice", "fake", "k");
+    const id2 = failedUnknown(ended, { id: "jobR5" });
+    expect((await (await recover(ended, id2)).json()).job).toMatchObject({ status: "failed", errorCode: "provider_timeout" });
+  });
+
+  it("only works for the owner's outcome-unknown failures that name a task", async () => {
+    const w = createTestWorld({ adapter: { videoModel: true, status: async () => { throw new Error("must not be called"); } } });
+    w.seedKey("alice", "fake", "k");
+    expect((await recover(w, failedUnknown(w), BOB)).status).toBe(404);
+    expect((await recover(w, failedUnknown(w, { id: "jobR2", errorCode: "provider_unavailable" }))).status).toBe(409);
+    expect((await recover(w, failedUnknown(w, { id: "jobR3", errorMessage: "no task here" }))).status).toBe(409);
+    expect((await recover(w, failedUnknown(w, { id: "jobR4", status: "completed" }))).status).toBe(409);
+    expect((await recover(w, "nope-1")).status).toBe(404);
+    expect((await recoverJob(jsonRequest("/api/jobs/x/recover", {}), w.deps, "jobR1")).status).toBe(401);
+  });
+
+  it("is refused for a provider that cannot report on tasks", async () => {
+    const w = createTestWorld(); // the fake adapter has no getJobStatus here
+    w.seedKey("alice", "fake", "k");
+    expect((await recover(w, failedUnknown(w))).status).toBe(409);
+    expect(w.jobs.get("jobR1")!.status).toBe("failed");
   });
 });

@@ -217,6 +217,38 @@ export async function deleteJob(request: Request, deps: ApiDeps, jobId: string):
   }
 }
 
+/**
+ * Gives a failed job a second look when the provider task is known but we gave up waiting (outcome unknown): the
+ * task id is read from the error message we saved, the job goes back to "processing" and the result is collected
+ * with free reads. It never creates a provider task, so it cannot bill again. Only for `outcome_unknown` failures.
+ */
+export async function recoverJob(request: Request, deps: ApiDeps, jobId: string): Promise<Response> {
+  try {
+    const user = await authenticate(request, deps.verifyToken);
+    if (!user) return unauthorized();
+    const limited = enforceRate(deps.limiter, "jobs", user.userId);
+    if (limited) return limited;
+    if (!id.safeParse(jobId).success) return apiError(404, "not_found", "Job not found.");
+    let job = await deps.jobs.getOwned(user.userId, jobId);
+    if (!job) return apiError(404, "not_found", "Job not found.");
+    if (job.status === "processing" && job.providerJobId) {
+      job = await reconcileJob(executeDepsOf(deps), job);
+      return json(200, { job: publicJob(job) });
+    }
+    const taskId = job.errorMessage?.match(/\bjob_[A-Za-z0-9]{6,64}\b/)?.[0];
+    if (job.status !== "failed" || job.errorCode !== "outcome_unknown" || job.providerJobId || !taskId) {
+      return apiError(409, "not_recoverable", "This job cannot be checked again.");
+    }
+    const adapter = await resolveAdapter(deps, user.userId, job.providerId);
+    if (!adapter?.getJobStatus) return apiError(409, "not_recoverable", "This provider cannot report on earlier tasks.");
+    await deps.jobs.update(job.id, { status: "processing", providerJobId: taskId, progress: 15, errorCode: null, errorMessage: null });
+    job = await reconcileJob(executeDepsOf(deps), { ...job, status: "processing", providerJobId: taskId, progress: 15, errorCode: null, errorMessage: null });
+    return json(200, { job: publicJob(job) });
+  } catch (error) {
+    return internalError(error);
+  }
+}
+
 function executeDepsOf(deps: ApiDeps): ExecuteDeps {
   return {
     jobs: deps.jobs, assets: deps.assets, keys: deps.keys, storage: deps.storage, vault: deps.vault,

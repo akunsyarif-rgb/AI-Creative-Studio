@@ -3,7 +3,7 @@ import { z } from "zod";
 import { readLimited } from "@/lib/net/public-url";
 import type { CustomProviderConfig } from "@/lib/data/repositories";
 import { sniffMime } from "@/lib/storage/sniff";
-import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, createSafeIO, mapStatus, type SafeIODeps } from "./safe-io";
+import { MAX_VIDEO_BYTES, createSafeIO, mapStatus, type SafeIODeps } from "./safe-io";
 import { userPriceFor } from "../pricing";
 import {
   ProviderError,
@@ -17,7 +17,9 @@ import {
 } from "../types";
 
 /**
- * SpicyAPI's native asynchronous task API (https://docs.spicyapi.ai): text-to-image and single-image edit:
+ * SpicyAPI's native asynchronous task API (https://docs.spicyapi.ai): images (text-to-image, single-image edit) and
+ * videos (text-to-video, image-to-video). EVERY task is submitted once and handed back by id; the job runner collects the
+ * result later with `getJobStatus` (free reads), so nothing waits inside one request:
  *   POST /api/v1/jobs/createTask      {model, input:{prompt}}  -> 202 {data:{taskId, estimatedCost}}   (billable, ONE attempt)
  *   GET  /api/v1/jobs/recordInfo?taskId=...                    -> state queued|running|succeeded|failed|expired (free)
  *   data.output.assets[0].url                                  -> signed download link
@@ -125,13 +127,7 @@ function taskEndedError(done: Record<string, unknown>): ProviderError {
   return new ProviderError(done.state === "expired" ? "timeout" : "unavailable", `SpicyAPI could not finish the task (${typeof code === "string" ? code : String(done.state)}). The hold is normally released.`, true);
 }
 
-/** Total time spent waiting for one task. The route allows 300 s, so stay well inside it. */
-export const POLL_BUDGET_MS = 240_000;
-
-export interface SpicyDeps extends SafeIODeps {
-  sleep?: (ms: number) => Promise<void>;
-  now?: () => number;
-}
+export type SpicyDeps = SafeIODeps;
 
 interface Envelope {
   code?: unknown;
@@ -173,33 +169,7 @@ export function createSpicyApiAdapter(cfg: CustomProviderConfig, deps: SpicyDeps
     })
   };
   const io = createSafeIO(SPICY_API_BASE, deps);
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const now = deps.now ?? Date.now;
   const auth = (secret: string) => ({ Authorization: `Bearer ${secret}`, Accept: "application/json" });
-
-  async function pollTask(taskId: string, secret: string): Promise<Record<string, unknown>> {
-    const started = now();
-    let delay = 2000;
-    for (;;) {
-      await sleep(delay);
-      delay = Math.min(delay + 1000, 8000);
-      let res: Response | null = null;
-      try {
-        res = await io.call(`/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`, { method: "GET", headers: auth(secret) });
-      } catch {
-        res = null; // reading is free: try again until the budget is spent
-      }
-      if (res && (res.status === 401 || res.status === 403)) throw new ProviderError("auth", `SpicyAPI rejected the API key while waiting. The task (${taskId}) may still be billed.`, false);
-      if (res?.ok) {
-        const data = (await readEnvelope(res)).data ?? {};
-        const state = data.state;
-        if (state === "succeeded" || state === "failed" || state === "expired") return data;
-      }
-      if (now() - started >= POLL_BUDGET_MS) {
-        throw new ProviderError("timeout", `SpicyAPI did not finish task ${taskId} in time. It may still finish and be billed; check your SpicyAPI task history. It was not submitted again.`, false);
-      }
-    }
-  }
 
   return {
     config,
@@ -295,26 +265,10 @@ export function createSpicyApiAdapter(cfg: CustomProviderConfig, deps: SpicyDeps
         throw new ProviderError("unknown", "SpicyAPI accepted the request but returned no task id. Check your SpicyAPI task history before retrying.", false);
       }
 
-      // Video takes minutes: hand the task id back and let the job runner collect the result later (getJobStatus).
-      if (video) return { providerJobId: taskId, status: "processing", progress: 15 };
-
-      const done = await pollTask(taskId, context.secret);
-      if (done.state !== "succeeded") throw taskEndedError(done);
-      const assets = (done.output as { assets?: { url?: unknown }[] } | undefined)?.assets;
-      const url = assets?.[0]?.url;
-      if (typeof url !== "string") throw new ProviderError("unknown", `The task ${taskId} succeeded but returned no image link.`, false);
-
-      const data = await io.downloadImage(url);
-      if (data.length === 0 || data.length > MAX_IMAGE_BYTES) throw new ProviderError("unknown", "SpicyAPI returned an invalid image.", false);
-      const contentType = sniffMime(data);
-      if (!contentType || !IMAGE_TYPES.has(contentType)) throw new ProviderError("unknown", "SpicyAPI returned an unsupported image type.", false);
-      const cost = typeof done.cost === "string" ? Number(done.cost) : NaN;
-      return {
-        providerJobId: taskId,
-        status: "validating",
-        outputFiles: [{ contentType, data }],
-        ...(Number.isFinite(cost) ? { estimatedCost: { amount: cost, currency: "USD", isEstimate: true as const, notes: "Final charge reported by SpicyAPI." } } : {})
-      };
+      // Never wait here: hand the task id back and let the job runner collect the result (getJobStatus). This works
+      // for images and videos alike, survives a closed page and has no time limit of its own. The task keeps
+      // running at SpicyAPI either way, so giving up early would only hide a result that may already be billed.
+      return { providerJobId: taskId, status: "processing", progress: 15 };
     }
   };
 }
