@@ -55,11 +55,24 @@ function Thumb({ api, assetId, alt }: { api: ApiClient; assetId: string; alt: st
   );
 }
 
-function JobCard({ api, job, onDeleted }: { api: ApiClient; job: JobView; onDeleted: (id: string) => void }) {
+function JobCard({ api, job, onDeleted, onChanged }: { api: ApiClient; job: JobView; onDeleted: (id: string) => void; onChanged: (job: JobView) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const label = job.prompt ? job.prompt.slice(0, 120) : "Generated item";
   const when = job.createdAt ? new Date(job.createdAt).toLocaleString() : "";
+
+  async function recover() {
+    setBusy(true);
+    setError(null);
+    try {
+      const { job: next } = await api.post<{ job: JobView }>(`/api/jobs/${job.id}/recover`);
+      onChanged(next);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Could not check again.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function remove() {
     if (!window.confirm("Delete this item permanently? This cannot be undone.")) return;
@@ -108,6 +121,9 @@ function JobCard({ api, job, onDeleted }: { api: ApiClient; job: JobView; onDele
       {job.prompt && <p className="job-prompt">{job.prompt}</p>}
       {job.status === "failed" && job.errorMessage && <p className="notice notice-error small" role="alert">{job.errorMessage}</p>}
       {error && <p className="notice notice-error small" role="alert">{error}</p>}
+      {job.status === "failed" && job.errorCode === "outcome_unknown" && (
+        <button className="btn btn-primary" type="button" disabled={busy} onClick={() => void recover()}>{busy ? "Checking…" : "Check provider again"}</button>
+      )}
       {!isActive(job) && (
         <button className="btn btn-danger" type="button" disabled={busy} onClick={() => void remove()}>{busy ? "Working…" : "Delete"}</button>
       )}
@@ -214,7 +230,7 @@ export default function LibraryPage() {
         </section>
       )}
       {jobs && jobs.length > 0 && (
-        <div className="gallery">{jobs.map((j) => <JobCard key={j.id} api={api} job={j} onDeleted={removeJob} />)}</div>
+        <div className="gallery">{jobs.map((j) => <JobCard key={j.id} api={api} job={j} onDeleted={removeJob} onChanged={(next) => setJobs((cur) => (cur ?? []).map((c) => (c.id === next.id ? { ...c, ...next, prompt: c.prompt ?? next.prompt } : c)))} />)}</div>
       )}
       {nextCursor && (
         <div className="actions" style={{ justifyContent: "center" }}>

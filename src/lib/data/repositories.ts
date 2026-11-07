@@ -31,8 +31,8 @@ export type NewJob = Pick<
 export interface JobPatch {
   status?: JobStatus;
   progress?: number;
-  errorCode?: string;
-  errorMessage?: string;
+  errorCode?: string | null;
+  errorMessage?: string | null;
   outputAssetIds?: string[];
   providerJobId?: string;
 }

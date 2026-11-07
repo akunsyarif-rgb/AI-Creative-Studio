@@ -12,10 +12,10 @@ const req = (over: Record<string, unknown> = {}) => ({ capability: "text_to_imag
 const task = "job_01k3m8x9q2z4v7n5p6r8s0t1w3";
 const env = (data: unknown, status = 200) => Response.json({ code: status, msg: "x", data }, { status });
 
-function setup(handler: (url: string, init: RequestInit) => Response | Promise<Response>, clock = { t: 0 }) {
+function setup(handler: (url: string, init: RequestInit) => Response | Promise<Response>) {
   const calls: { url: string; init: RequestInit }[] = [];
   const fetchImpl = (async (url: string, init: RequestInit) => { calls.push({ url, init }); return handler(url, init); }) as unknown as typeof fetch;
-  const adapter = createSpicyApiAdapter(cfg, { fetch: fetchImpl, lookup: publicDns, sleep: async (ms) => { clock.t += ms; }, now: () => clock.t });
+  const adapter = createSpicyApiAdapter(cfg, { fetch: fetchImpl, lookup: publicDns });
   return { adapter, calls };
 }
 
@@ -30,25 +30,25 @@ describe("SpicyAPI native adapter", () => {
     expect(buildCustomAdapter({ ...cfg, baseUrl: "https://api.other.example/v1" }).config.description).not.toContain("native task API");
   });
 
-  it("creates one task, polls until it succeeds, downloads the signed link without the key and returns the image", async () => {
-    let polls = 0;
+  it("creates one task and returns its id at once (no waiting); collecting the image later downloads the signed link without the key", async () => {
     const { adapter, calls } = setup((url) => {
       if (url.endsWith("/jobs/createTask")) return env({ taskId: task, state: "queued", estimatedCost: "0.008" }, 202);
-      if (url.includes("/jobs/recordInfo")) {
-        polls += 1;
-        return polls < 3 ? env({ state: "running" }) : env({ state: "succeeded", cost: "0.008", output: { assets: [{ url: "https://files.example.com/o.png?X-Signature=abc123&Expires=1" }] } });
-      }
+      if (url.includes("/jobs/recordInfo")) return env({ state: "succeeded", cost: "0.008", output: { assets: [{ url: "https://files.example.com/o.png?X-Signature=abc123&Expires=1" }] } });
       return new Response(PNG, { headers: { "content-type": "image/png" } });
     });
     const out = await adapter.executeJob(req(), "idem-1", ctx);
-    expect(out).toMatchObject({ providerJobId: task, status: "validating", outputFiles: [{ contentType: "image/png" }], estimatedCost: { amount: 0.008 } });
+    expect(out).toMatchObject({ providerJobId: task, status: "processing" });
+    expect(out.outputFiles).toBeUndefined();
+    expect(calls).toHaveLength(1); // only createTask: nothing was polled or downloaded here
 
     const create = calls[0];
     expect(create.url).toBe("https://api.spicyapi.ai/api/v1/jobs/createTask");
     expect((create.init.headers as Record<string, string>).Authorization).toBe("Bearer sk-spicy-SECRET");
     expect((create.init.headers as Record<string, string>)["Idempotency-Key"]).toMatch(/^[0-9a-f]{48}$/);
     expect(JSON.parse(create.init.body as string)).toEqual({ model: "vendor/img-1", input: { prompt: "a fox" } });
-    expect(calls.filter((c) => c.url.endsWith("/jobs/createTask"))).toHaveLength(1);
+
+    const done = await adapter.getJobStatus!(task, "sk-spicy-SECRET");
+    expect(done).toMatchObject({ status: "validating", outputFiles: [{ contentType: "image/png" }], estimatedCost: { amount: 0.008 } });
     expect(calls[1].url).toBe(`https://api.spicyapi.ai/api/v1/jobs/recordInfo?taskId=${task}`);
     const download = calls[calls.length - 1];
     expect(download.url).toBe("https://files.example.com/o.png?X-Signature=abc123&Expires=1");
@@ -75,30 +75,28 @@ describe("SpicyAPI native adapter", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("reports failed, refused and expired tasks", async () => {
-    const run = async (final: unknown) => {
-      const { adapter } = setup((url) => (url.endsWith("/jobs/createTask") ? env({ taskId: task, state: "queued" }, 202) : env(final)));
-      return adapter.executeJob(req(), "i", ctx);
-    };
-    await expect(run({ state: "failed", errorCode: "upstream_failed" })).rejects.toMatchObject({ code: "unavailable", outcomeKnown: true });
-    await expect(run({ state: "failed", errorCode: "content_rejected" })).rejects.toMatchObject({ code: "content_policy", outcomeKnown: false });
-    await expect(run({ state: "expired", errorCode: "timeout" })).rejects.toMatchObject({ code: "timeout", outcomeKnown: true });
-    await expect(run({ state: "succeeded", output: { assets: [] } })).rejects.toMatchObject({ code: "unknown", outcomeKnown: false });
+  it("reports failed, refused and expired tasks when collecting", async () => {
+    const collect = async (final: unknown) => setup(() => env(final)).adapter.getJobStatus!(task, "k");
+    await expect(collect({ state: "failed", errorCode: "upstream_failed" })).rejects.toMatchObject({ code: "unavailable", outcomeKnown: true });
+    await expect(collect({ state: "failed", errorCode: "content_rejected" })).rejects.toMatchObject({ code: "content_policy", outcomeKnown: false });
+    await expect(collect({ state: "expired", errorCode: "timeout" })).rejects.toMatchObject({ code: "timeout", outcomeKnown: true });
+    await expect(collect({ state: "succeeded", output: { assets: [] } })).rejects.toMatchObject({ code: "unknown", outcomeKnown: false });
   });
 
-  it("stops waiting after the budget, keeps the task id in the message and never creates a second task", async () => {
+  it("never waits or creates a second task, however slow the provider is", async () => {
     const { adapter, calls } = setup((url) => (url.endsWith("/jobs/createTask") ? env({ taskId: task, state: "queued" }, 202) : env({ state: "running" })));
-    await expect(adapter.executeJob(req(), "i", ctx)).rejects.toMatchObject({ code: "timeout", outcomeKnown: false, message: expect.stringContaining(task) });
+    await adapter.executeJob(req(), "i", ctx);
+    expect(await adapter.getJobStatus!(task, "k")).toMatchObject({ status: "processing" });
+    expect(await adapter.getJobStatus!(task, "k")).toMatchObject({ status: "processing" });
     expect(calls.filter((c) => c.url.endsWith("/jobs/createTask"))).toHaveLength(1);
   });
 
   it("says why a download failed without leaking the signed link", async () => {
     const { adapter } = setup((url) => {
-      if (url.endsWith("/jobs/createTask")) return env({ taskId: task }, 202);
       if (url.includes("recordInfo")) return env({ state: "succeeded", output: { assets: [{ url: "https://files.example.com/o.png?X-Signature=SIGSECRET" }] } });
       return new Response("denied", { status: 403 });
     });
-    const err = await adapter.executeJob(req(), "i", ctx).catch((e) => e);
+    const err = await adapter.getJobStatus!(task, "k").catch((e) => e);
     expect(err.message).toContain("HTTP 403");
     expect(err.message).not.toContain("SIGSECRET");
   });
@@ -107,11 +105,10 @@ describe("SpicyAPI native adapter", () => {
     const bad = setup(() => env({ taskId: "../etc", state: "queued" }, 202));
     await expect(bad.adapter.executeJob(req(), "i", ctx)).rejects.toMatchObject({ code: "unknown", outcomeKnown: false });
     const html = setup((url) => {
-      if (url.endsWith("/jobs/createTask")) return env({ taskId: task }, 202);
       if (url.includes("recordInfo")) return env({ state: "succeeded", output: { assets: [{ url: "https://files.example.com/x" }] } });
       return new Response("<html></html>", { headers: { "content-type": "text/html" } });
     });
-    await expect(html.adapter.executeJob(req(), "i", ctx)).rejects.toMatchObject({ code: "unknown" });
+    await expect(html.adapter.getJobStatus!(task, "k")).rejects.toMatchObject({ code: "unknown" });
   });
 
   it("validates requests: listed model, prompt only, no input images", () => {
@@ -124,7 +121,7 @@ describe("SpicyAPI native adapter", () => {
   });
 
   it("asks for price-unknown consent and tests the key against the free catalog", async () => {
-    const { adapter, calls } = setup((url, init) => ((init.headers as Record<string, string>).Authorization.endsWith("good") ? env({ items: [] }) : Response.json({}, { status: 401 })));
+    const { adapter, calls } = setup((_url, init) => ((init.headers as Record<string, string>).Authorization.endsWith("good") ? env({ items: [] }) : Response.json({}, { status: 401 })));
     expect((await adapter.estimateCost(req()))?.amount).toBeNull();
     expect(await adapter.testKey("good")).toEqual({ valid: true });
     expect(await adapter.testKey("bad")).toMatchObject({ valid: false });
@@ -147,8 +144,7 @@ describe("SpicyAPI image edit", () => {
       if (url.includes("recordInfo")) return env({ state: "succeeded", output: { assets: [{ url: "https://files.example.com/o.png?sig=1" }] } });
       return new Response(PNG, { headers: { "content-type": "image/png" } });
     }) as unknown as typeof fetch;
-    const clock = { t: 0 };
-    return { calls, adapter: createSpicyApiAdapter(editCfg, { fetch: fetchImpl, lookup: publicDns, sleep: async (ms) => { clock.t += ms; }, now: () => clock.t }) };
+    return { calls, adapter: createSpicyApiAdapter(editCfg, { fetch: fetchImpl, lookup: publicDns }) };
   }
 
   it("infers capabilities from the model id suffix", () => {
@@ -172,7 +168,7 @@ describe("SpicyAPI image edit", () => {
   it("reads the model schema first, sends the image as a data URI in the field the model declares, one createTask", async () => {
     const { adapter, calls } = editSetup(schema({ prompt: {}, image_urls: { type: "array", minItems: 1, maxItems: 3 }, seed: {} }));
     const out = await adapter.executeJob(editReq(), "idem", editCtx);
-    expect(out.outputFiles?.[0].contentType).toBe("image/png");
+    expect(out).toMatchObject({ status: "processing", providerJobId: task });
     expect(calls[0].url).toBe("https://api.spicyapi.ai/api/v1/models/vendor/img-edit/edit");
     const create = calls.find((c) => c.url.endsWith("/jobs/createTask"))!;
     const body = JSON.parse(create.init.body as string);
@@ -228,7 +224,7 @@ describe("SpicyAPI video", () => {
       if (url.includes("recordInfo")) return Response.json({ code: recordStatus, data: record }, { status: recordStatus });
       return new Response(MP4, { headers: { "content-type": "video/mp4" } });
     }) as unknown as typeof fetch;
-    return { calls, adapter: createSpicyApiAdapter(vcfg, { fetch: fetchImpl, lookup: publicDns, sleep: async () => undefined, now: () => 0 }) };
+    return { calls, adapter: createSpicyApiAdapter(vcfg, { fetch: fetchImpl, lookup: publicDns }) };
   }
 
   it("infers video capabilities and offers a length option only on video models", () => {
